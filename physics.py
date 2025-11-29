@@ -7,8 +7,8 @@ import numpy as np
 
 # Cell type constants
 FLUID = 0
-BANK_LEFT = 1
-BANK_RIGHT = 2
+BANK = 1
+TERRAIN = 3
 
 
 class PhysicsSolver:
@@ -20,7 +20,8 @@ class PhysicsSolver:
                  nu=1e-6, rho=1000.0, g=9.81, 
                  sediment_density=2650.0, porosity=0.4,
                  critical_shear=0.05, transport_coefficient=0.1,
-                 bank_width=2, bank_erosion_rate=0.3, bank_critical_shear=0.15):
+                 bank_width=2, bank_erosion_rate=0.3, bank_critical_shear=0.15,
+                 terrain_width=3):
         """
         Initialise physics parameters.
         
@@ -38,6 +39,7 @@ class PhysicsSolver:
             bank_width: Width of bank regions on each side (in cells)
             bank_erosion_rate: Bank erosion rate relative to bed (0-1)
             bank_critical_shear: Critical shear stress for bank erosion (Pa)
+            terrain_width: Width of terrain regions beyond banks (in cells)
         """
         self.grid_width = grid_width
         self.grid_height = grid_height
@@ -52,6 +54,7 @@ class PhysicsSolver:
         self.bank_width = bank_width
         self.bank_erosion_rate = bank_erosion_rate
         self.bank_critical_shear = bank_critical_shear
+        self.terrain_width = terrain_width
         
         # Grid dimensions
         self.nx = grid_width + 1
@@ -64,7 +67,7 @@ class PhysicsSolver:
         self.h = np.zeros((self.nx, self.ny))  # Bed elevation
         self.water_depth = np.zeros((self.nx, self.ny))  # Water depth
         
-        # Assign cell types FLUID=0, BANK_LEFT=1, BANK_RIGHT=2
+        # Assign cell types FLUID=0, BANK=1
         self.cell_type = np.zeros((self.nx, self.ny), dtype=int)
         self._initialise_cell_types()
         
@@ -73,13 +76,22 @@ class PhysicsSolver:
         
     def _initialise_cell_types(self):
         """
-        Initialise cell type mask for banks.
+        Initialise cell type mask for banks and terrain.
+        Layout: [TERRAIN | BANK | FLUID | BANK | TERRAIN]
         """
-        # Set left bank cells to BANK_LEFT
-        self.cell_type[:, :self.bank_width] = BANK_LEFT
-        # Set right bank cells to BANK_RIGHT
-        self.cell_type[:, -self.bank_width:] = BANK_RIGHT
-        # Rest of cells are FLUID
+        # Set left terrain cells
+        self.cell_type[:, :self.terrain_width] = TERRAIN
+        
+        # Set left bank cells
+        self.cell_type[:, self.terrain_width:self.terrain_width + self.bank_width] = BANK
+        
+        # Set right bank cells
+        self.cell_type[:, -(self.terrain_width + self.bank_width):-self.terrain_width] = BANK
+        
+        # Set right terrain cells
+        self.cell_type[:, -self.terrain_width:] = TERRAIN
+        
+        # Rest of cells are FLUID (between banks)
         
     def _initialise_fields(self):
         """
@@ -94,7 +106,7 @@ class PhysicsSolver:
         self.u.fill(0.1)
         self.v.fill(0.0)
         
-        # Set velocity to zero in bank cells
+        # Set velocity to zero in bank and terrain cells
         self.u[self.cell_type != FLUID] = 0.0
         self.v[self.cell_type != FLUID] = 0.0
         
@@ -207,12 +219,121 @@ class PhysicsSolver:
         p_new = p.copy()
         p_new = np.nan_to_num(p_new, nan=0.0, posinf=1e6, neginf=-1e6)
         
+        # Solve continuity equation to update water depth
+        # This evolves the water surface based on flow divergence/convergence
+        water_depth_new = self.solve_continuity_equation(self.water_depth, u_new, v_new, dt)
+        
+        # Update stored water depth
+        self.water_depth = water_depth_new
+        
         # Update velocity and pressure fields
         self.u = u_new
         self.v = v_new
         self.p = p_new
         
         return u_new, v_new, p_new
+    
+    def solve_continuity_equation(self, h_w:np.ndarray, u:np.ndarray, v:np.ndarray, dt:float):
+        """
+        Compute water depth using simplified equilibrium model.
+        For steady flow, water surface should be essentially flat.
+        Only allows small variations from equilibrium based on flow conditions.
+        
+        Args:
+            h_w: Current water depth (nx, ny)
+            u: x-velocity field (nx, ny)
+            v: y-velocity field (nx, ny)
+            dt: Time step (not used in simplified model, but kept for interface)
+            
+        Returns:
+            h_w_new: Updated water depth (nx, ny) - essentially flat surface
+        """
+        nx, ny = h_w.shape
+        
+        # For steady flow, water surface should be flat
+        # Use equilibrium depth with very small variations only
+        equilibrium_depth = 0.5  # Target equilibrium depth (m)
+        
+        # Compute flow divergence to detect significant flow changes
+        # Only allow small depth variations if there's actual flow divergence
+        dx = self.cell_size
+        dy = self.cell_size
+        
+        # Simple divergence check (only for detecting significant flow changes)
+        div_u = np.zeros_like(h_w)
+        div_u[1:-1, 1:-1] = (
+            (u[2:, 1:-1] - u[:-2, 1:-1]) / (2 * dx) +
+            (v[1:-1, 2:] - v[1:-1, :-2]) / (2 * dy)
+        )
+        
+        # Only allow very small depth variations (max 2% variation from equilibrium)
+        # This keeps the surface essentially flat while allowing tiny adjustments
+        max_variation = 0.01  # Maximum 1cm variation from equilibrium (2% of 0.5m)
+        
+        # Small adjustment based on flow divergence (damped heavily)
+        flow_adjustment = -div_u * 0.01  # Very small coupling to flow
+        flow_adjustment = np.clip(flow_adjustment, -max_variation, max_variation)
+        
+        # Strong relaxation toward flat equilibrium surface
+        relaxation_time = 0.01  # Very fast relaxation (10ms)
+        relaxation_term = -(h_w - equilibrium_depth) / relaxation_time
+        
+        # Combine: mostly relaxation (keeps surface flat), tiny flow adjustment
+        dh_w_dt = 0.95 * relaxation_term + 0.05 * flow_adjustment
+        
+        # Apply strict constraint to prevent any significant changes
+        max_change_rate = 0.005  # Maximum 0.5% change per time step
+        max_change = max_change_rate * equilibrium_depth
+        dh_w_dt = np.clip(dh_w_dt, -max_change / dt, max_change / dt)
+        
+        # Update water depth
+        h_w_new = h_w + dh_w_dt * dt
+        
+        # Apply boundary conditions for water depth
+        # Inflow boundary (left, x=0): prescribe water depth based on inflow
+        inflow_depth = 0.5  # Prescribed inflow depth (m)
+        h_w_new[0, 1:-1] = inflow_depth  # Prescribe at inflow
+        
+        # Outflow boundary (right, x=nx-1): zero gradient (extrapolate from interior)
+        h_w_new[-1, 1:-1] = h_w_new[-2, 1:-1]
+        
+        # Top and bottom boundaries: zero gradient
+        h_w_new[1:-1, 0] = h_w_new[1:-1, 1]
+        h_w_new[1:-1, -1] = h_w_new[1:-1, -2]
+        
+        # Corners: average of adjacent boundaries
+        h_w_new[0, 0] = (h_w_new[0, 1] + h_w_new[1, 0]) / 2
+        h_w_new[0, -1] = (h_w_new[0, -2] + h_w_new[1, -1]) / 2
+        h_w_new[-1, 0] = (h_w_new[-1, 1] + h_w_new[-2, 0]) / 2
+        h_w_new[-1, -1] = (h_w_new[-1, -2] + h_w_new[-2, -1]) / 2
+        
+        # Ensure minimum water depth to avoid numerical issues
+        min_depth = 0.01  # Minimum water depth (m)
+        h_w_new = np.maximum(h_w_new, min_depth)
+        
+        # Set water depth to zero in bank and terrain cells (no water on banks/terrain)
+        h_w_new[self.cell_type != FLUID] = 0.0
+        
+        # Clean NaN/Inf values
+        h_w_new = np.nan_to_num(h_w_new, nan=min_depth, posinf=2.0, neginf=min_depth)
+        
+        # Clip to reasonable maximum (much lower to prevent unrealistic values)
+        max_depth = 2.0  # Maximum water depth (m) - reduced from 10.0
+        h_w_new = np.clip(h_w_new, min_depth, max_depth)
+        
+        # Additional stability: apply simple spatial smoothing to prevent checkerboard patterns
+        # Use a simple 3-point average filter (only in fluid cells)
+        fluid_mask = (self.cell_type == FLUID)
+        if np.any(fluid_mask):
+            h_w_smooth = h_w_new.copy()
+            # Simple averaging filter for interior points
+            h_w_smooth[1:-1, 1:-1] = 0.8 * h_w_new[1:-1, 1:-1] + \
+                                     0.05 * (h_w_new[:-2, 1:-1] + h_w_new[2:, 1:-1] + 
+                                            h_w_new[1:-1, :-2] + h_w_new[1:-1, 2:])
+            # Only apply smoothing to fluid cells
+            h_w_new = np.where(fluid_mask, h_w_smooth, h_w_new)
+        
+        return h_w_new
     
     def compute_shear_stress(self, u:np.ndarray, v:np.ndarray, h:np.ndarray):
         """
@@ -294,27 +415,25 @@ class PhysicsSolver:
             for j in range(ny):
                 cell_type = self.cell_type[i, j]
                 
-                # Left bank water flowing from right collision (positive v)
-                if cell_type == BANK_LEFT and j < ny - 1:
-                    # Check if water is flowing toward this bank
-                    if self.cell_type[i, j+1] == FLUID and v[i, j+1] < 0:
-                        # Water velocity component normal to bank
-                        v_normal = abs(v[i, j+1])
-
-                        # Additional stress from collision (proportional to velocity squared)
-                        collision_stress = self.rho * collision_factor * v_normal**2
-                        tau[i, j] += collision_stress
-                
-                # Right bank water flowing from left collision (negative v)
-                elif cell_type == BANK_RIGHT and j > 0:
-                    # Check if water is flowing toward this bank
-                    if self.cell_type[i, j-1] == FLUID and v[i, j-1] > 0:
-                        # Water velocity component normal to bank
-                        v_normal = abs(v[i, j-1])
-
-                        # Additional stress from collision
-                        collision_stress = self.rho * collision_factor * v_normal**2
-                        tau[i, j] += collision_stress
+                # Bank collision
+                if cell_type == BANK:
+                    # Check neighbors for fluid flowing towards this bank cell
+                    
+                    # Check left neighbor (j-1)
+                    if j > 0 and self.cell_type[i, j-1] == FLUID:
+                        # If fluid is to the left, check if it's flowing right (positive v)
+                        if v[i, j-1] > 0:
+                            v_normal = abs(v[i, j-1])
+                            collision_stress = self.rho * collision_factor * v_normal**2
+                            tau[i, j] += collision_stress
+                            
+                    # Check right neighbor (j+1)
+                    if j < ny - 1 and self.cell_type[i, j+1] == FLUID:
+                        # If fluid is to the right, check if it's flowing left (negative v)
+                        if v[i, j+1] < 0:
+                            v_normal = abs(v[i, j+1])
+                            collision_stress = self.rho * collision_factor * v_normal**2
+                            tau[i, j] += collision_stress
         
         return tau
     
@@ -453,10 +572,57 @@ class PhysicsSolver:
         # Compute bank erosion rate
         bank_erosion = self.transport_coefficient * (tau_excess ** 1.5)
         
-        # Apply only to bank cells
-        bank_erosion = np.where(self.cell_type != FLUID, bank_erosion, 0.0)
+        # Apply only to bank and terrain cells (terrain can erode into banks)
+        bank_erosion = np.where((self.cell_type != FLUID), bank_erosion, 0.0)
         
         return bank_erosion
+    
+    def convert_terrain_to_bank(self, h:np.ndarray, tau:np.ndarray, u:np.ndarray, v:np.ndarray):
+        """
+        Convert TERRAIN cells to BANK cells when river meanders and cuts into terrain.
+        This happens when:
+        1. Terrain is adjacent to FLUID cells with high shear stress
+        2. Terrain elevation is eroded below threshold
+        3. Water flows into terrain (water depth > 0)
+        
+        Args:
+            h: Current bed elevation (nx, ny)
+            tau: Shear stress field (nx, ny)
+            u: x-velocity field (nx, ny)
+            v: y-velocity field (nx, ny)
+        """
+        nx, ny = h.shape
+        terrain_erosion_threshold = 0.1  # Terrain erodes when elevation drops by this amount
+        min_shear_for_conversion = 0.1  # Minimum shear stress to convert terrain
+        
+        # Find terrain cells that should become banks
+        for i in range(nx):
+            for j in range(ny):
+                if self.cell_type[i, j] == TERRAIN:
+                    # Check if adjacent to fluid cells
+                    adjacent_to_fluid = False
+                    is_left_side = j < ny // 2
+                    
+                    # Check neighbors
+                    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < nx and 0 <= nj < ny:
+                            if self.cell_type[ni, nj] == FLUID:
+                                adjacent_to_fluid = True
+                                break
+                    
+                    # Check if terrain is being eroded by water
+                    # Terrain should convert if:
+                    # 1. Adjacent to fluid AND high shear stress
+                    # 2. OR water depth > 0 (water has flowed into terrain)
+                    # 3. OR elevation is below nearby fluid cells
+                    if adjacent_to_fluid and tau[i, j] > min_shear_for_conversion:
+                        # Convert to bank
+                        self.cell_type[i, j] = BANK
+                    
+                    # Also convert if water has flowed into terrain
+                    elif self.water_depth[i, j] > 0.01:
+                        self.cell_type[i, j] = BANK
     
     def exner_equation(self, qs_x:np.ndarray, qs_y:np.ndarray, h:np.ndarray, dt:float, tau:np.ndarray=None, u:np.ndarray=None, v:np.ndarray=None):
         """
@@ -569,6 +735,10 @@ class PhysicsSolver:
         if np.any(h_new > 5.0) or np.any(h_new < -5.0):
             h_new = np.clip(h_new, -10.0, 10.0)
         
+        # Convert terrain to bank when river meanders (after elevation update)
+        if tau is not None and u is not None and v is not None:
+            self.convert_terrain_to_bank(h_new, tau, u, v)
+        
         return dh_dt, h_new
     
     def apply_boundary_conditions(self, u:np.ndarray, v:np.ndarray, h:np.ndarray):
@@ -601,32 +771,28 @@ class PhysicsSolver:
         u[:, -1] = 0.0  # Top wall
         v[:, -1] = 0.0
         
-        # Bank boundaries: no-slip walls with collision effects
-        # Left bank: no flow into bank, reflect velocity component
+        # Bank and terrain boundaries: no-slip walls with collision effects
+        # Set velocity to zero for all non-fluid cells (banks and terrain)
         for i in range(nx):
-            for j in range(self.bank_width):
-                if self.cell_type[i, j] == BANK_LEFT:
-                    u[i, j] = 0.0
-                    v[i, j] = 0.0
-
-                    # If adjacent fluid cell flows toward bank, create pressure
-                    if j < ny - 1 and self.cell_type[i, j+1] == FLUID:
-                        # Reflect velocity component (water bounces off bank)
-                        if v[i, j+1] < 0:  # Flowing toward bank
-                            v[i, j+1] *= -0.3  # Partial reflection (energy loss)
-        
-        # Right bank: no flow into bank, reflect velocity
-        for i in range(nx):
-            for j in range(ny - self.bank_width, ny):
-                if self.cell_type[i, j] == BANK_RIGHT:
+            for j in range(ny):
+                cell_type = self.cell_type[i, j]
+                if cell_type != FLUID:
                     u[i, j] = 0.0
                     v[i, j] = 0.0
                     
-                    # If adjacent fluid cell flows toward bank, create pressure
-                    if j > 0 and self.cell_type[i, j-1] == FLUID:
-                        # Reflect velocity component (water bounces off bank)
-                        if v[i, j-1] > 0:  # Flowing toward bank
-                            v[i, j-1] *= -0.3  # Partial reflection (energy loss)
+                    # Handle bank collision effects (terrain doesn't have collision yet)
+                    if cell_type == BANK:
+                        # Check neighbors for fluid flowing toward bank
+                        
+                        # Check right neighbor (j+1) - fluid on right, flowing left
+                        if j < ny - 1 and self.cell_type[i, j+1] == FLUID:
+                            if v[i, j+1] < 0:  # Flowing toward bank
+                                v[i, j+1] *= -0.3  # Partial reflection (energy loss)
+                        
+                        # Check left neighbor (j-1) - fluid on left, flowing right
+                        if j > 0 and self.cell_type[i, j-1] == FLUID:
+                            if v[i, j-1] > 0:  # Flowing toward bank
+                                v[i, j-1] *= -0.3  # Partial reflection (energy loss)
         
         # Corner points (average of adjacent boundaries)
         u[0, 0] = 0.0
@@ -634,25 +800,27 @@ class PhysicsSolver:
         u[-1, 0] = 0.0
         u[-1, -1] = 0.0
         
-        # Update water depth based on bed elevation
-        # Calculate water surface elevation based only on FLUID cells (bed), not banks
+        # Update water surface elevation from dynamically computed water depth
+        # Water surface = bed elevation + water depth (computed from continuity equation)
+        # The water depth is now evolved dynamically via solve_continuity_equation()
+        # so we compute the surface elevation from it rather than overriding it
+        
+        # Ensure minimum water depth in fluid cells
+        min_depth = 0.01
+        self.water_depth = np.maximum(self.water_depth, min_depth)
+        # Set water depth to zero in bank and terrain cells (no water on banks/terrain)
+        self.water_depth[self.cell_type != FLUID] = 0.0
+        
+        # Compute water surface elevation from current water depth and bed elevation
+        water_surface_elevation = h + self.water_depth
+        
+        # Store reference water surface elevation (for visualization/debugging)
         fluid_mask = (self.cell_type == FLUID)
         if np.any(fluid_mask):
-            # Compute maximum bed elevation in fluid region only
-            max_bed_elevation = np.max(h[fluid_mask])
-            water_surface_elevation = max_bed_elevation + 0.5  # Reference water surface above bed
-
+            # Average water surface in fluid region
+            self.water_surface_elevation = np.mean(water_surface_elevation[fluid_mask])
         else:
-            water_surface_elevation = np.max(h) + 0.5
-        
-        # Water depth = water surface - bed elevation (only meaningful in fluid cells)
-        water_depth_actual = np.maximum(water_surface_elevation - h, 0.01)  # Minimum depth
-        # Set water depth to zero in bank cells (no water on banks)
-        water_depth_actual[self.cell_type != FLUID] = 0.01  # Small value to avoid division by zero
-        
-        # Update stored water depth and water surface elevation
-        self.water_depth = water_depth_actual
-        self.water_surface_elevation = water_surface_elevation
+            self.water_surface_elevation = np.mean(water_surface_elevation)
         
         return u, v
     

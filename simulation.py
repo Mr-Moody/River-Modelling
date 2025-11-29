@@ -11,13 +11,14 @@ class Simulation():
                  sediment_density=2650.0, porosity=0.4,
                  critical_shear=0.05, transport_coefficient=0.1,
                  bank_width=2, bank_erosion_rate=0.3, bank_critical_shear=0.15,
-                 bank_height=1):
+                 bank_height=1, terrain_width=3):
 
         self.dt = dt  # Delta Time
         self.time = 0.0 # Length of simulation in seconds
         self.frames = []
         self.bank_width = bank_width
         self.bank_height = bank_height  # Height of banks above bed
+        self.terrain_width = terrain_width
         
         # Create mesh for entire geometry left bank, bed, right bank
         self.grid = MeshGrid(width=width, height=height, cell_size=cell_size)
@@ -45,7 +46,8 @@ class Simulation():
             transport_coefficient=transport_coefficient,
             bank_width=bank_width,
             bank_erosion_rate=bank_erosion_rate,
-            bank_critical_shear=bank_critical_shear
+            bank_critical_shear=bank_critical_shear,
+            terrain_width=terrain_width
         )
         
         # Initialise bed elevation from mesh points
@@ -53,8 +55,12 @@ class Simulation():
     
     def _initialise_unified_mesh(self):
         """
-        Initialise unified mesh with banks elevated above bed region.
+        Initialise unified mesh with terrain, banks, and bed regions.
+        Layout: [TERRAIN | BANK | FLUID | BANK | TERRAIN]
+        Terrain is highest, then banks, then bed (lowest).
         """
+        from physics import TERRAIN, BANK, FLUID
+        
         nx = self.grid.width + 1
         ny = self.grid.height + 1
         
@@ -68,34 +74,47 @@ class Simulation():
             y = point.position[1]
             z_base = point.position[2]  # Base elevation from mesh generation
             
-            # Determine if this point is in bank region or bed region
-            if grid_j < self.bank_width:
-                # Get left bank bed elevation at interface (column bank_width) for smoothing
-                interface_idx = grid_i * ny + self.bank_width
-
-                if interface_idx < len(self.grid.points):
-                    bed_elev_at_interface = self.grid.points[interface_idx].position[2]
-                else:
-                    bed_elev_at_interface = z_base
-
-                # Transition from bed at interface to bed + bank_height at outer edge
-                distance_from_interface = self.bank_width - grid_j
-                z = bed_elev_at_interface + self.bank_height * (distance_from_interface / self.bank_width)
-
-            elif grid_j >= (ny - 1 - self.bank_width):
-                # Get right bankbed elevation at interface (column height - bank_width) for smoothing
-                interface_col = ny - 1 - self.bank_width
-                interface_idx = grid_i * ny + interface_col
-
-                if interface_idx < len(self.grid.points):
-                    bed_elev_at_interface = self.grid.points[interface_idx].position[2]
-                else:
-                    bed_elev_at_interface = z_base
-
-                # Transition from bed at interface to bed + bank_height at outer edge
-                distance_from_interface = grid_j - interface_col
-                z = bed_elev_at_interface + self.bank_height * (distance_from_interface / self.bank_width)
+            # Determine cell type from physics solver
+            if hasattr(self, 'physics'):
+                cell_type = self.physics.cell_type[grid_i, grid_j]
             else:
+                # Fallback: determine from position
+                if grid_j < self.terrain_width:
+                    cell_type = TERRAIN
+                elif grid_j < self.terrain_width + self.bank_width:
+                    cell_type = BANK
+                elif grid_j >= ny - (self.terrain_width + self.bank_width):
+                    cell_type = TERRAIN
+                elif grid_j >= ny - self.terrain_width:
+                    cell_type = BANK
+                else:
+                    cell_type = FLUID
+            
+            # Set elevation based on cell type
+            if cell_type == TERRAIN:
+                # Terrain is highest - above banks
+                terrain_height = self.bank_height + 0.5  # Terrain 0.5m above banks
+                z = z_base + terrain_height
+            elif cell_type == BANK:
+                # Bank: transition from bed to bank height
+                # Determine which side (left or right) based on grid index
+                if grid_j < ny // 2:
+                    # Left bank
+                    interface_col = self.terrain_width + self.bank_width
+                    if grid_j < interface_col:
+                        distance_from_interface = interface_col - grid_j
+                        z = z_base + self.bank_height * (distance_from_interface / self.bank_width)
+                    else:
+                        z = z_base
+                else:
+                    # Right bank
+                    interface_col = ny - 1 - (self.terrain_width + self.bank_width)
+                    if grid_j > interface_col:
+                        distance_from_interface = grid_j - interface_col
+                        z = z_base + self.bank_height * (distance_from_interface / self.bank_width)
+                    else:
+                        z = z_base
+            else:  # FLUID
                 # Keep base elevation at bed level
                 z = z_base
             
@@ -138,7 +157,7 @@ class Simulation():
         """
         Update unified mesh with new elevations and velocity fields.
         """
-        from physics import FLUID, BANK_LEFT, BANK_RIGHT
+        from physics import FLUID
         
         nx = self.physics.nx
         ny = self.physics.ny
@@ -191,8 +210,9 @@ class Simulation():
     def _update_fluid_surface(self, h, u, v):
         """
         Update fluid surface mesh with water surface elevation.
+        Snaps water vertices to terrain surface when water would cut into terrain.
         """
-        from physics import FLUID
+        from physics import FLUID, TERRAIN
         
         nx = self.physics.nx
         ny = self.physics.ny
@@ -207,6 +227,15 @@ class Simulation():
         water_surface = fluid_h + fluid_depth
         water_surface_flat = water_surface.flatten()
         
+        # Build elevation map from unified mesh (all cells, including terrain)
+        # This allows us to check terrain elevation at any (x, y) position
+        unified_elevations = np.zeros((nx, ny))
+        for idx, grid_point in enumerate(self.grid.points):
+            grid_i = idx // ny
+            grid_j = idx % ny
+            if 0 <= grid_i < nx and 0 <= grid_j < ny:
+                unified_elevations[grid_i, grid_j] = grid_point.position[2]
+        
         # Update fluid surface mesh points
         for i, point in enumerate(self.fluid_surface.points):
             if i < len(water_surface_flat):
@@ -214,12 +243,46 @@ class Simulation():
 
                 if not np.isfinite(surface_elev):
                     surface_elev = point.position[2]
+                
+                # Get the (x, y) position of this fluid surface point
+                x = point.position[0]
+                y = point.position[1]
+                
+                # Find corresponding grid indices in unified mesh
+                grid_i_unified = int(round(x / self.grid.cell_size))
+                grid_j_unified = int(round(y / self.grid.cell_size))
+                
+                # Clamp to valid range
+                grid_i_unified = max(0, min(grid_i_unified, nx - 1))
+                grid_j_unified = max(0, min(grid_j_unified, ny - 1))
+                
+                # Get elevation from unified mesh at this location
+                unified_elev = unified_elevations[grid_i_unified, grid_j_unified]
+                cell_type_at_location = self.physics.cell_type[grid_i_unified, grid_j_unified]
+                
+                # Check for terrain at current location and adjacent cells
+                # Find maximum terrain elevation in current cell and 8-connected neighbors
+                max_terrain_elev = -np.inf
+                for di in [-1, 0, 1]:
+                    for dj in [-1, 0, 1]:
+                        ni, nj = grid_i_unified + di, grid_j_unified + dj
+                        if 0 <= ni < nx and 0 <= nj < ny:
+                            if self.physics.cell_type[ni, nj] == TERRAIN:
+                                neighbor_elev = unified_elevations[ni, nj]
+                                if neighbor_elev > max_terrain_elev:
+                                    max_terrain_elev = neighbor_elev
+                
+                # If terrain is found and its elevation is higher than water surface,
+                # snap water to terrain surface at the same elevation height
+                if max_terrain_elev > -np.inf and max_terrain_elev > surface_elev:
+                    surface_elev = max_terrain_elev
 
                 point.position[2] = surface_elev
                 
                 # Map velocity from physics grid (fluid region only)
-                grid_i = i // (ny - 2 * self.bank_width)
-                grid_j = i % (ny - 2 * self.bank_width) + self.bank_width
+                fluid_height = ny - 2 * self.bank_width if self.bank_width > 0 else ny
+                grid_i = i // fluid_height
+                grid_j = i % fluid_height + self.bank_width
                 grid_i = min(max(grid_i, 0), nx - 1)
                 grid_j = min(max(grid_j, 0), ny - 1)
                 
@@ -239,31 +302,33 @@ class Simulation():
         """
         Save current state as a frame with timestamp.
         Includes:
-        - Bed/bank mesh (brown): full river geometry
+        - Ground mesh (brown/green): terrain, banks, and bed combined
         - Fluid surface mesh (blue): water surface
         """
+        
         self.grid.updateVerticesFromPoints()
         self.fluid_surface.updateVerticesFromPoints()
         
-        # Validate vertices from bed mesh
-        bed_vertices = np.nan_to_num(self.grid.vertices.copy(), nan=0.0, posinf=1e3, neginf=-1e3)
-        bed_velocities = np.array([point.velocity for point in self.grid.points])
-        bed_velocities = np.nan_to_num(bed_velocities, nan=0.0, posinf=1e3, neginf=-1e3)
+        # Get ground vertices (unified terrain/bank/bed)
+        ground_vertices = np.nan_to_num(self.grid.vertices.copy(), nan=0.0, posinf=1e3, neginf=-1e3)
+        ground_velocities = np.array([point.velocity for point in self.grid.points])
+        ground_velocities = np.nan_to_num(ground_velocities, nan=0.0, posinf=1e3, neginf=-1e3)
         
         # Validate vertices from fluid surface mesh
         fluid_vertices = np.nan_to_num(self.fluid_surface.vertices.copy(), nan=0.0, posinf=1e3, neginf=-1e3)
         fluid_velocities = np.array([point.velocity for point in self.fluid_surface.points])
         fluid_velocities = np.nan_to_num(fluid_velocities, nan=0.0, posinf=1e3, neginf=-1e3)
         
-        # Save frame with both meshes
+        # Save frame with unified ground mesh and fluid mesh
         frame = {
             "timestamp": self.time,
-            "bed_vertices": bed_vertices,
-            "bed_velocities": bed_velocities,
+            "ground_vertices": ground_vertices,
+            "ground_velocities": ground_velocities,
             "fluid_vertices": fluid_vertices,
             "fluid_velocities": fluid_velocities,
-            "vertices": bed_vertices,
-            "velocities": bed_velocities
+            # Keep legacy fields empty or mapped for backward compatibility if needed
+            "vertices": ground_vertices,
+            "velocities": ground_velocities
         }
 
         self.frames.append(frame)
@@ -368,6 +433,7 @@ class Simulation():
                     "duration": self.time,
                     "bank_width": self.bank_width,
                     "bank_height": self.bank_height,
+                    "terrain_width": self.terrain_width,
                     "created": datetime.now().isoformat()
                 }
             }, f)
@@ -385,6 +451,6 @@ class Simulation():
 
 
 if __name__ == "__main__":
-    sim = Simulation(width=20, height=20, cell_size=1, dt=0.01, nu=1e-6, rho=1000.0, g=9.81, sediment_density=2650.0, porosity=0.4, critical_shear=0.05, transport_coefficient=0.1)
+    sim = Simulation(width=30, height=30, cell_size=1, dt=0.01, nu=1e-6, rho=1000.0, g=9.81, sediment_density=2650.0, porosity=0.4, critical_shear=0.05, transport_coefficient=0.1, bank_width=2, bank_erosion_rate=0.3, bank_critical_shear=0.15, bank_height=0.5, terrain_width=5)
     sim.run(duration=20.0, save_interval=0.1, output_file="simulation_frames.pkl")
 

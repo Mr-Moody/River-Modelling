@@ -197,11 +197,52 @@ def plotFrame(frame:dict, triangles_data:dict, metadata:dict, frame_index:int, a
     
     # Get parameters
     bank_width = metadata.get("bank_width", 0)
+    terrain_width = metadata.get("terrain_width", 0)
     height = metadata["height"]
     width = metadata["width"]
     
+    # Plot terrain mesh (green) - surrounding terrain
+    if "terrain_vertices" in frame and frame["terrain_vertices"] is not None and len(frame["terrain_vertices"]) > 0:
+        terrain_vertices = np.nan_to_num(frame["terrain_vertices"], nan=0.0, posinf=1e3, neginf=-1e3)
+        all_vertices_list.append(terrain_vertices)
+        
+        # Generate triangles for terrain mesh (full grid, filtered to terrain cells)
+        # Use the full bed triangles but filter to only include terrain vertices
+        terrain_triangles = []
+        if "terrain_indices" in frame:
+            terrain_indices_set = set(frame["terrain_indices"])
+            bed_triangles = triangles_data.get("bed", [])
+            for triangle in bed_triangles:
+                # Check if all three vertices of triangle are terrain
+                if all(idx in terrain_indices_set for idx in triangle):
+                    # Remap indices to terrain vertex array
+                    remapped_triangle = [frame["terrain_indices"].index(idx) for idx in triangle]
+                    terrain_triangles.append(remapped_triangle)
+        
+        if len(terrain_triangles) > 0:
+            terrain_mesh = createMeshFromVertices(terrain_vertices, terrain_triangles,
+                                                 facecolor="green", edgecolor="darkgreen", alpha=0.7)
+            ax.add_collection3d(terrain_mesh)
+    
     # Plot bed/bank mesh (brown) - full river geometry
     bed_triangles = triangles_data.get("bed", [])
+    # Filter out triangles that are entirely terrain
+    if "terrain_indices" in frame and "bed_indices" in frame:
+        terrain_indices_set = set(frame["terrain_indices"])
+        bed_indices_set = set(frame["bed_indices"])
+        bed_bank_triangles = []
+        for triangle in bed_triangles:
+            # Include triangle if at least one vertex is bed/bank (not all terrain)
+            if not all(idx in terrain_indices_set for idx in triangle):
+                # Remap indices to bed/bank vertex array
+                try:
+                    remapped_triangle = [frame["bed_indices"].index(idx) for idx in triangle if idx in bed_indices_set]
+                    if len(remapped_triangle) == 3:
+                        bed_bank_triangles.append(remapped_triangle)
+                except ValueError:
+                    pass
+        bed_triangles = bed_bank_triangles if bed_bank_triangles else bed_triangles
+    
     bed_mesh = createMeshFromVertices(bed_vertices, bed_triangles,
                                       facecolor="saddlebrown", edgecolor="brown", alpha=0.8)
     ax.add_collection3d(bed_mesh)

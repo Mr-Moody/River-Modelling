@@ -68,8 +68,12 @@ def correlate_clines(x1, x2, y1, y2):
     sm - distance matrix"""
     X = np.vstack((x1,y1))
     Y = np.vstack((x2,y2))
-    sm = distance.cdist(X.T, Y.T) # similarity matrix
-    alignment = dtw(sm, step_pattern=symmetric1) # dynamic time warping
+    # Compute DTW using Euclidean distance
+    def euclidean(u, v):
+        return np.sqrt(np.sum((u - v)**2))
+    alignment = dtw(X.T, Y.T, dist=euclidean) # dynamic time warping
+    # Extract the cost matrix from alignment for return
+    sm = alignment.cost_matrix if hasattr(alignment, 'cost_matrix') else np.zeros((len(X.T), len(Y.T)))
     p = alignment.index1[::-1] # correlation indices for first curve
     q = alignment.index2[::-1] # correlation indices for second curve
     return p, q, sm

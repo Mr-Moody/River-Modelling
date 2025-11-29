@@ -1,0 +1,382 @@
+% Physics Equations from physics.py
+% River Modeling Simulation - Coupled Navier-Stokes and Exner Equations
+
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\begin{document}
+
+\title{Physics Equations for River Modeling Simulation}
+\author{Extracted from physics.py}
+\maketitle
+
+\section{Shallow Water Navier-Stokes Equations}
+
+\subsection{Water Surface Elevation}
+The water surface elevation $\eta$ is computed from bed elevation $h$ and water depth $h_w$:
+\begin{equation}
+\eta = h + h_w
+\end{equation}
+
+\subsection{x-Velocity Equation}
+The x-component of velocity $u$ is updated using the shallow water Navier-Stokes equation:
+\begin{equation}
+\frac{\partial u}{\partial t} + u \frac{\partial u}{\partial x} + v \frac{\partial u}{\partial y} = -g \frac{\partial \eta}{\partial x} + \nu \nabla^2 u - g h_w \frac{\partial h}{\partial x}
+\end{equation}
+
+Discretized form (upwind differencing for advection):
+\begin{align}
+u_{\text{adv},x} &= \begin{cases}
+u_{i,j} \frac{u_{i,j} - u_{i-1,j}}{\Delta x} & \text{if } u_{i,j} > 0 \\
+u_{i,j} \frac{u_{i+1,j} - u_{i,j}}{\Delta x} & \text{if } u_{i,j} \leq 0
+\end{cases} \\
+u_{\text{adv},y} &= \begin{cases}
+v_{i,j} \frac{u_{i,j} - u_{i,j-1}}{\Delta y} & \text{if } v_{i,j} > 0 \\
+v_{i,j} \frac{u_{i,j+1} - u_{i,j}}{\Delta y} & \text{if } v_{i,j} \leq 0
+\end{cases}
+\end{align}
+
+Pressure gradient (central difference):
+\begin{equation}
+\frac{\partial p}{\partial x} = -g \frac{\eta_{i+1,j} - \eta_{i-1,j}}{2\Delta x}
+\end{equation}
+
+Viscous diffusion (Laplacian):
+\begin{equation}
+\nabla^2 u = \frac{u_{i+1,j} - 2u_{i,j} + u_{i-1,j}}{\Delta x^2} + \frac{u_{i,j+1} - 2u_{i,j} + u_{i,j-1}}{\Delta y^2}
+\end{equation}
+
+Bed slope effect:
+\begin{equation}
+h_{\text{slope},x} = -g h_w \frac{h_{i+1,j} - h_{i-1,j}}{2\Delta x}
+\end{equation}
+
+Time update:
+\begin{equation}
+u_{i,j}^{n+1} = u_{i,j}^n + \Delta t \left( u_{\text{adv},x} + u_{\text{adv},y} + \frac{\partial p}{\partial x} + \nu \nabla^2 u + h_{\text{slope},x} \right)
+\end{equation}
+
+\subsection{y-Velocity Equation}
+The y-component of velocity $v$ follows the same structure:
+\begin{equation}
+\frac{\partial v}{\partial t} + u \frac{\partial v}{\partial x} + v \frac{\partial v}{\partial y} = -g \frac{\partial \eta}{\partial y} + \nu \nabla^2 v - g h_w \frac{\partial h}{\partial y}
+\end{equation}
+
+Discretized form:
+\begin{align}
+v_{\text{adv},x} &= \begin{cases}
+u_{i,j} \frac{v_{i,j} - v_{i-1,j}}{\Delta x} & \text{if } u_{i,j} > 0 \\
+u_{i,j} \frac{v_{i+1,j} - v_{i,j}}{\Delta x} & \text{if } u_{i,j} \leq 0
+\end{cases} \\
+v_{\text{adv},y} &= \begin{cases}
+v_{i,j} \frac{v_{i,j} - v_{i,j-1}}{\Delta y} & \text{if } v_{i,j} > 0 \\
+v_{i,j} \frac{v_{i,j+1} - v_{i,j}}{\Delta y} & \text{if } v_{i,j} \leq 0
+\end{cases}
+\end{align}
+
+Pressure gradient:
+\begin{equation}
+\frac{\partial p}{\partial y} = -g \frac{\eta_{i,j+1} - \eta_{i,j-1}}{2\Delta y}
+\end{equation}
+
+Viscous diffusion:
+\begin{equation}
+\nabla^2 v = \frac{v_{i+1,j} - 2v_{i,j} + v_{i-1,j}}{\Delta x^2} + \frac{v_{i,j+1} - 2v_{i,j} + v_{i,j-1}}{\Delta y^2}
+\end{equation}
+
+Bed slope effect:
+\begin{equation}
+h_{\text{slope},y} = -g h_w \frac{h_{i,j+1} - h_{i,j-1}}{2\Delta y}
+\end{equation}
+
+Time update:
+\begin{equation}
+v_{i,j}^{n+1} = v_{i,j}^n + \Delta t \left( v_{\text{adv},x} + v_{\text{adv},y} + \frac{\partial p}{\partial y} + \nu \nabla^2 v + h_{\text{slope},y} \right)
+\end{equation}
+
+\section{Water Depth Continuity Equation}
+
+\subsection{Simplified Equilibrium Model}
+For steady flow, water depth is maintained near equilibrium with small adjustments:
+\begin{equation}
+\frac{\partial h_w}{\partial t} = w_r \cdot \left( -\frac{h_w - h_{w,\text{eq}}}{\tau_r} \right) + w_f \cdot \left( -\alpha_f \nabla \cdot \mathbf{u} \right)
+\end{equation}
+
+where:
+\begin{itemize}
+\item $h_{w,\text{eq}} = 0.5$ m is the equilibrium water depth
+\item $\tau_r = 0.01$ s is the relaxation time scale
+\item $w_r = 0.95$ is the relaxation weight
+\item $w_f = 0.05$ is the flow adjustment weight
+\item $\alpha_f = 0.01$ is the flow coupling coefficient
+\end{itemize}
+
+Flow divergence (central difference):
+\begin{equation}
+\nabla \cdot \mathbf{u} = \frac{u_{i+1,j} - u_{i-1,j}}{2\Delta x} + \frac{v_{i,j+1} - v_{i,j-1}}{2\Delta y}
+\end{equation}
+
+Time update with constraints:
+\begin{equation}
+h_w^{n+1} = h_w^n + \Delta t \cdot \text{clip}\left( \frac{\partial h_w}{\partial t}, -\frac{\Delta h_{\max}}{\Delta t}, \frac{\Delta h_{\max}}{\Delta t} \right)
+\end{equation}
+
+where $\Delta h_{\max} = 0.005 \cdot h_{w,\text{eq}}$ is the maximum change per time step.
+
+\section{Shear Stress Computation}
+
+\subsection{Velocity Magnitude}
+\begin{equation}
+|\mathbf{u}| = \sqrt{u^2 + v^2}
+\end{equation}
+
+\subsection{Water Depth from Surface}
+\begin{equation}
+h_w = \max(\eta - h, h_{w,\min})
+\end{equation}
+
+where $h_{w,\min} = 0.001$ m is the minimum water depth.
+
+\subsection{Friction Velocity (Manning's Equation)}
+\begin{equation}
+u_* = \sqrt{\frac{g n^2 |\mathbf{u}|^2}{R^{1/3}}}
+\end{equation}
+
+where:
+\begin{itemize}
+\item $n = 0.03$ is Manning's roughness coefficient for bed
+\item $n_{\text{bank}} = 0.05$ is Manning's roughness coefficient for banks
+\item $R = \max(h_w, h_{w,\min})$ is the hydraulic radius
+\end{itemize}
+
+\subsection{Base Shear Stress}
+\begin{equation}
+\tau_{\text{base}} = \rho u_*^2
+\end{equation}
+
+\subsection{Bank Collision Stress}
+Additional stress at bank walls due to water-wall collisions:
+\begin{equation}
+\tau_{\text{collision}} = \rho C_{\text{coll}} v_{\text{normal}}^2
+\end{equation}
+
+where:
+\begin{itemize}
+\item $C_{\text{coll}} = 1.5$ is the collision enhancement factor
+\item $v_{\text{normal}}$ is the velocity component normal to the bank
+\end{itemize}
+
+Total shear stress:
+\begin{equation}
+\tau = \tau_{\text{base}} + \tau_{\text{collision}}
+\end{equation}
+
+\section{Sediment Transport}
+
+\subsection{Excess Shear Stress}
+\begin{equation}
+\tau_{\text{excess}} = \max(\tau - \tau_c, 0)
+\end{equation}
+
+where $\tau_c$ is the critical shear stress for sediment motion.
+
+\subsection{Sediment Flux Magnitude (Meyer-Peter and M\"uller Type)}
+\begin{equation}
+q_s = C_t \tau_{\text{excess}}^{3/2}
+\end{equation}
+
+where $C_t$ is the transport coefficient.
+
+\subsection{Bed Slope Effect}
+Bed slope reduces transport on steep slopes:
+\begin{equation}
+S_x = \frac{\partial h}{\partial x}, \quad S_y = \frac{\partial h}{\partial y}
+\end{equation}
+
+\begin{equation}
+|S| = \sqrt{S_x^2 + S_y^2}
+\end{equation}
+
+\begin{equation}
+f_{\text{slope}} = \frac{1}{1 + |S|/S_{\max}}
+\end{equation}
+
+where $S_{\max} = 0.3$ is the maximum slope factor.
+
+Modified sediment flux:
+\begin{equation}
+q_s = C_t \tau_{\text{excess}}^{3/2} \cdot f_{\text{slope}}
+\end{equation}
+
+\subsection{Sediment Flux Vector}
+The flux direction combines flow direction and bed slope:
+\begin{equation}
+\hat{\mathbf{u}} = \frac{\mathbf{u}}{|\mathbf{u}|}
+\end{equation}
+
+\begin{equation}
+\hat{\mathbf{S}} = \frac{-\nabla h}{|\nabla h|}
+\end{equation}
+
+Combined direction:
+\begin{equation}
+\hat{\mathbf{q}} = w_f \hat{\mathbf{u}} + w_s \hat{\mathbf{S}}
+\end{equation}
+
+where:
+\begin{itemize}
+\item $w_f = 0.7$ is the flow direction weight
+\item $w_s = 0.3$ is the slope direction weight
+\end{itemize}
+
+Normalized combined direction:
+\begin{equation}
+\hat{\mathbf{q}}_{\text{norm}} = \frac{\hat{\mathbf{q}}}{|\hat{\mathbf{q}}|}
+\end{equation}
+
+Sediment flux vector:
+\begin{equation}
+\mathbf{q}_s = q_s \hat{\mathbf{q}}_{\text{norm}}
+\end{equation}
+
+Components:
+\begin{align}
+q_{s,x} &= q_s \hat{q}_x \\
+q_{s,y} &= q_s \hat{q}_y
+\end{align}
+
+\section{Bank Erosion}
+
+\subsection{Excess Shear Stress for Banks}
+\begin{equation}
+\tau_{\text{excess,bank}} = \max(\tau - \tau_{c,\text{bank}}, 0)
+\end{equation}
+
+where $\tau_{c,\text{bank}}$ is the critical shear stress for bank erosion.
+
+\subsection{Bank Erosion Rate}
+\begin{equation}
+E_{\text{bank}} = C_t \tau_{\text{excess,bank}}^{3/2}
+\end{equation}
+
+\section{Exner Equation}
+
+\subsection{Sediment Flux Divergence}
+Using central differences for interior points:
+\begin{equation}
+\nabla \cdot \mathbf{q}_s = \frac{\partial q_{s,x}}{\partial x} + \frac{\partial q_{s,y}}{\partial y}
+\end{equation}
+
+Interior points (central difference):
+\begin{equation}
+\nabla \cdot \mathbf{q}_s \bigg|_{i,j} = \frac{q_{s,x}(i+1,j) - q_{s,x}(i-1,j)}{2\Delta x} + \frac{q_{s,y}(i,j+1) - q_{s,y}(i,j-1)}{2\Delta y}
+\end{equation}
+
+Boundary conditions: zero flux at all boundaries:
+\begin{align}
+q_{s,x}(0,:) &= 0, \quad q_{s,x}(N_x-1,:) = 0 \\
+q_{s,y}(:,0) &= 0, \quad q_{s,y}(:,N_y-1) = 0
+\end{align}
+
+\subsection{Bed Elevation Evolution}
+The Exner equation governs bed elevation change:
+\begin{equation}
+\frac{\partial h}{\partial t} = -\frac{1}{1-\phi} \nabla \cdot \mathbf{q}_s
+\end{equation}
+
+where $\phi$ is the bed porosity.
+
+\subsection{Bank Erosion Contribution}
+Bank erosion contributes to elevation change:
+\begin{equation}
+\frac{\partial h}{\partial t}\bigg|_{\text{bank}} = -\frac{E_{\text{bank}}}{1-\phi}
+\end{equation}
+
+Combined equation:
+\begin{equation}
+\frac{\partial h}{\partial t} = \begin{cases}
+-\frac{1}{1-\phi} \nabla \cdot \mathbf{q}_s & \text{for fluid cells} \\
+-\frac{1}{1-\phi} \left( \nabla \cdot \mathbf{q}_s + E_{\text{bank}} \right) & \text{for bank/terrain cells}
+\end{cases}
+\end{equation}
+
+Time update:
+\begin{equation}
+h^{n+1} = h^n + \Delta t \cdot \frac{\partial h}{\partial t}
+\end{equation}
+
+With stability constraint:
+\begin{equation}
+\Delta h = \text{clip}(h^{n+1} - h^n, -\Delta h_{\max}, \Delta h_{\max})
+\end{equation}
+
+where $\Delta h_{\max} = 0.02 \cdot \Delta t$ is the maximum change per time step.
+
+\section{Finite Difference Discretizations}
+
+\subsection{Central Differences (Interior)}
+For a function $f(x,y)$:
+\begin{align}
+\frac{\partial f}{\partial x}\bigg|_{i,j} &\approx \frac{f_{i+1,j} - f_{i-1,j}}{2\Delta x} \\
+\frac{\partial f}{\partial y}\bigg|_{i,j} &\approx \frac{f_{i,j+1} - f_{i,j-1}}{2\Delta y}
+\end{align}
+
+\subsection{Forward Differences (Left/Bottom Boundaries)}
+\begin{align}
+\frac{\partial f}{\partial x}\bigg|_{0,j} &\approx \frac{f_{1,j} - f_{0,j}}{\Delta x} \\
+\frac{\partial f}{\partial y}\bigg|_{i,0} &\approx \frac{f_{i,1} - f_{i,0}}{\Delta y}
+\end{align}
+
+\subsection{Backward Differences (Right/Top Boundaries)}
+\begin{align}
+\frac{\partial f}{\partial x}\bigg|_{N_x-1,j} &\approx \frac{f_{N_x-1,j} - f_{N_x-2,j}}{\Delta x} \\
+\frac{\partial f}{\partial y}\bigg|_{i,N_y-1} &\approx \frac{f_{i,N_y-1} - f_{i,N_y-2}}{\Delta y}
+\end{align}
+
+\subsection{Laplacian (Second Derivatives)}
+\begin{equation}
+\nabla^2 f\bigg|_{i,j} = \frac{f_{i+1,j} - 2f_{i,j} + f_{i-1,j}}{\Delta x^2} + \frac{f_{i,j+1} - 2f_{i,j} + f_{i,j-1}}{\Delta y^2}
+\end{equation}
+
+\section{Boundary Conditions}
+
+\subsection{Velocity Boundary Conditions}
+\begin{align}
+u(0,y) &= u_{\text{inflow}} \quad \text{(prescribed inflow)} \\
+u(L_x,y) &= u(L_x-\Delta x, y) \quad \text{(zero gradient/outflow)} \\
+v(x,0) &= 0, \quad v(x,L_y) = 0 \quad \text{(no-slip walls)} \\
+u(x,0) &= 0, \quad u(x,L_y) = 0 \quad \text{(no-slip walls)}
+\end{align}
+
+\subsection{Water Depth Boundary Conditions}
+\begin{align}
+h_w(0,y) &= h_{w,\text{inflow}} \quad \text{(prescribed inflow depth)} \\
+h_w(L_x,y) &= h_w(L_x-\Delta x, y) \quad \text{(zero gradient)} \\
+h_w(x,0) &= h_w(x,\Delta y), \quad h_w(x,L_y) = h_w(x,L_y-\Delta y) \quad \text{(zero gradient)}
+\end{align}
+
+\subsection{Sediment Flux Boundary Conditions}
+Zero flux at all boundaries (sediment conservation):
+\begin{align}
+q_{s,x}(0,:) &= 0, \quad q_{s,x}(L_x,:) = 0 \\
+q_{s,y}(:,0) &= 0, \quad q_{s,y}(:,L_y) = 0
+\end{align}
+
+\section{Physical Constants and Parameters}
+
+\begin{itemize}
+\item $\nu = 10^{-6}$ m$^2$/s (kinematic viscosity)
+\item $\rho = 1000$ kg/m$^3$ (water density)
+\item $g = 9.81$ m/s$^2$ (gravitational acceleration)
+\item $\rho_s = 2650$ kg/m$^3$ (sediment density)
+\item $\phi = 0.4$ (bed porosity)
+\item $\tau_c = 0.05$ Pa (critical shear stress for sediment motion)
+\item $\tau_{c,\text{bank}} = 0.15$ Pa (critical shear stress for bank erosion)
+\item $C_t = 0.1$ (sediment transport coefficient)
+\item $n = 0.03$ (Manning's roughness for bed)
+\item $n_{\text{bank}} = 0.05$ (Manning's roughness for banks)
+\end{itemize}
+
+\end{document}
+

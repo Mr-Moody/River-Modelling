@@ -1,6 +1,7 @@
 using UnityEngine;
 using System;
 using System.Collections;
+using System.Collections.Generic;
 
 /// <summary>
 /// The main simulation controller class.
@@ -51,6 +52,16 @@ public class SimulationController : MonoBehaviour
     public double Porosity = 0.4;
     public double CriticalShear = 0.05;
     public double TransportCoefficient = 0.1;
+    
+    [Header("Bank Erosion Parameters")]
+    [Tooltip("Critical shear stress for bank erosion. Lower values = easier to erode (faster migration). Recommended: 0.05-0.15")]
+    public double BankCriticalShear = 0.05;  // Lowered from 0.15 for faster erosion
+    
+    [Tooltip("Bank erosion rate multiplier. Higher values = faster bank erosion and migration. Recommended: 1.0-5.0 for visible migration")]
+    public double BankErosionRate = 2.0;  // Increased from 0.3 for faster migration
+    
+    [Tooltip("Erosion threshold before bank migrates (meters). Lower = faster migration. Recommended: 0.001-0.01")]
+    public double BankMigrationThreshold = 0.005;  // Lower = migrates more frequently
 
     private RiverMeshPhysicsSolver riverMeshSolver;
 
@@ -270,12 +281,15 @@ public class SimulationController : MonoBehaviour
             porosity: Porosity,
             criticalShear: CriticalShear,
             transportCoefficient: TransportCoefficient,
-            bankCriticalShear: 0.15,
-            bankErosionRate: 0.3
+            bankCriticalShear: BankCriticalShear,
+            bankErosionRate: BankErosionRate
         );
 
         // Update cell types based on geometry
         riverMeshSolver.UpdateCellTypes(vertices);
+        
+        // Set bank migration threshold (controls how fast banks move)
+        riverMeshSolver.bankMigrationThreshold = BankMigrationThreshold;
         
         // Set initial water depth
         for (int i = 0; i < numCrossSections; i++)
@@ -453,7 +467,8 @@ public class SimulationController : MonoBehaviour
         int numCrossSections = riverMeshSolver.numCrossSections;
         int widthResolution = riverMeshSolver.widthResolution;
         
-        // Find max velocity for normalization
+        // Calculate maximum velocity magnitude (normal) across all points
+        maxVelocity = 0.0f;
         for (int i = 0; i < numCrossSections; i++)
         {
             for (int w = 0; w < widthResolution; w++)
@@ -462,6 +477,8 @@ public class SimulationController : MonoBehaviour
                 if (vel > maxVelocity) maxVelocity = (float)vel;
             }
         }
+        
+        // Set minimum threshold to avoid division by zero
         if (maxVelocity < 0.01f) maxVelocity = 1.0f;
         
         // Update vertices directly from river mesh solver
@@ -484,6 +501,10 @@ public class SimulationController : MonoBehaviour
                 colors[vertexIdx] = new Color(normalizedVelocity, 0, 0, 1);
             }
         }
+        
+        // Regenerate triangles to respect cell type boundaries (prevent triangles across banks)
+        // This must be done before assigning vertices so triangles are correct when recalculating normals
+        RegenerateTrianglesWithCellTypeBoundaries(riverMesh, numCrossSections, widthResolution);
         
         // Apply updated vertices and colors to mesh
         riverMesh.vertices = riverVertices;
@@ -523,6 +544,67 @@ public class SimulationController : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Regenerates mesh triangles to respect cell type boundaries.
+    /// Prevents triangles from spanning across BANK-FLUID boundaries which causes visual artifacts.
+    /// </summary>
+    private void RegenerateTrianglesWithCellTypeBoundaries(Mesh riverMesh, int numCrossSections, int widthResolution)
+    {
+        if (riverMeshSolver == null || riverMesh == null)
+        {
+            return;
+        }
+        
+        List<int> triangles = new List<int>();
+        
+        // Generate triangles only within the same cell type regions
+        for (int i = 0; i < numCrossSections - 1; i++)
+        {
+            for (int w = 0; w < widthResolution - 1; w++)
+            {
+                // Get cell types for the four vertices of this quad
+                int cellType00 = riverMeshSolver.cellType[i, w];
+                int cellType01 = riverMeshSolver.cellType[i, w + 1];
+                int cellType10 = riverMeshSolver.cellType[i + 1, w];
+                int cellType11 = riverMeshSolver.cellType[i + 1, w + 1];
+                
+                // Check if this quad spans across different cell types (BANK-FLUID boundary)
+                bool spansBankBoundary = false;
+                
+                // Check if any edge crosses from BANK to FLUID or vice versa
+                if (cellType00 != cellType01) spansBankBoundary = true; // Left edge
+                if (cellType00 != cellType10) spansBankBoundary = true; // Top edge
+                if (cellType01 != cellType11) spansBankBoundary = true; // Right edge
+                if (cellType10 != cellType11) spansBankBoundary = true; // Bottom edge
+                
+                // Skip triangles that span across cell type boundaries
+                if (spansBankBoundary)
+                {
+                    continue;
+                }
+                
+                // All vertices have the same cell type - generate triangles normally
+                int current = i * widthResolution + w;
+                int next = (i + 1) * widthResolution + w;
+                int currentRight = i * widthResolution + (w + 1);
+                int nextRight = (i + 1) * widthResolution + (w + 1);
+                
+                // Triangle 1: current, currentRight, next
+                triangles.Add(current);
+                triangles.Add(currentRight);
+                triangles.Add(next);
+                
+                // Triangle 2: next, currentRight, nextRight
+                triangles.Add(next);
+                triangles.Add(currentRight);
+                triangles.Add(nextRight);
+            }
+        }
+        
+        // Update mesh triangles
+        riverMesh.triangles = triangles.ToArray();
+    }
+    
     // --- Public Getters (Optional, for external visualization/debugging) ---
 
     public RiverMeshPhysicsSolver GetSolver()

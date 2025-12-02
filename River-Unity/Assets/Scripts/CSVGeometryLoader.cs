@@ -183,6 +183,27 @@ public class CSVGeometryLoader : MonoBehaviour
 
         rawPoints = rawPoints.OrderBy(p => p.Order).ToList();
 
+        // Remove duplicate cross-sections at start/end that might create a closing face
+        // Check if first and last cross-sections are duplicates (same position)
+        if (rawPoints.Count >= 2)
+        {
+            var first = rawPoints[0];
+            var last = rawPoints[rawPoints.Count - 1];
+            
+            // Check if first and last are at the same position (within small tolerance)
+            float tolerance = 0.0001f;
+            bool firstEqualsLast = Mathf.Abs(first.LX - last.LX) < tolerance &&
+                                   Mathf.Abs(first.LY - last.LY) < tolerance &&
+                                   Mathf.Abs(first.RX - last.RX) < tolerance &&
+                                   Mathf.Abs(first.RY - last.RY) < tolerance;
+            
+            if (firstEqualsLast)
+            {
+                Debug.LogWarning("[CSVGeometryLoader] First and last cross-sections are duplicates. Removing last to prevent closing face.");
+                rawPoints.RemoveAt(rawPoints.Count - 1);
+            }
+        }
+
         // Apply simplification if requested
         if (simplificationFactor > 1)
         {
@@ -487,13 +508,18 @@ public class CSVGeometryLoader : MonoBehaviour
     /// <summary>
     /// Creates a mesh strip by connecting sequential cross-sections (L_i, R_i) to (L_{i+1}, R_{i+1}).
     /// Corrected winding order to ensure normals face upwards.
+    /// IMPORTANT: This does NOT create a closing face - it only connects consecutive cross-sections.
+    /// The mesh is an open strip from start to end.
     /// </summary>
     private int[] StripTriangulate(int numCrossSections)
     {
+        // Only create quads between consecutive cross-sections (not connecting last back to first)
         int numQuads = numCrossSections - 1;
         int[] triangles = new int[numQuads * 6];
         int t = 0;
 
+        // Loop only connects i to i+1, stopping before the last cross-section
+        // This ensures no closing face is created between start and end
         for (int i = 0; i < numQuads; i++)
         {
             int v0 = i * 2;       // L_i (Current Left Bank)

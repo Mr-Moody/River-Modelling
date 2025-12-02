@@ -31,6 +31,10 @@ public class RiverMeshPhysicsSolver
     public double[,] waterDepth;    // Water depth
     public int[,] cellType;         // Cell type (FLUID, BANK, TERRAIN)
     
+    // Bank migration tracking
+    private double[,] cumulativeBankErosion;  // Cumulative erosion at bank cells (for migration)
+    public double bankMigrationThreshold = 0.01;  // Erosion threshold before converting FLUID to BANK (meters)
+    
     // Physical spacing (approximate, will be calculated from mesh)
     private double[] ds;             // Distance between cross-sections along river
     private double[] dw;             // Distance across river at each cross-section
@@ -63,6 +67,16 @@ public class RiverMeshPhysicsSolver
         h = new double[numCrossSections, widthResolution];
         waterDepth = new double[numCrossSections, widthResolution];
         cellType = new int[numCrossSections, widthResolution];
+        cumulativeBankErosion = new double[numCrossSections, widthResolution];
+        
+        // Initialize cumulative bank erosion to zero
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                cumulativeBankErosion[i, w] = 0.0;
+            }
+        }
         
         // Calculate spacing
         ds = new double[numCrossSections];
@@ -638,7 +652,8 @@ public class RiverMeshPhysicsSolver
                 // Erosion rate only applies to BANK cells
                 if (cellType[i, w] != RiverCellType.FLUID)
                 {
-                    bank_erosion[i, w] = transportCoefficient * Math.Pow(tau_excess, 1.5);
+                    // Bank erosion rate scales the base transport coefficient
+                    bank_erosion[i, w] = bankErosionRate * transportCoefficient * Math.Pow(tau_excess, 1.5);
                 }
                 else
                 {
@@ -758,11 +773,138 @@ public class RiverMeshPhysicsSolver
         // Apply boundary conditions: maintain bank elevations and prevent edge falling
         ApplyBedElevationBoundaryConditions(h_new);
         
+        // Accumulate bank erosion for migration tracking
+        // Only accumulate at bank edge cells (BANK cells adjacent to FLUID cells)
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                if (cellType[i, w] == RiverCellType.BANK)
+                {
+                    // Check if this is a bank edge cell (adjacent to FLUID)
+                    bool isBankEdge = false;
+                    
+                    // Check left neighbor
+                    if (w > 0 && cellType[i, w - 1] == RiverCellType.FLUID)
+                        isBankEdge = true;
+                    
+                    // Check right neighbor
+                    if (w < widthResolution - 1 && cellType[i, w + 1] == RiverCellType.FLUID)
+                        isBankEdge = true;
+                    
+                    // Only accumulate erosion at bank edges (where water contacts bank)
+                    if (isBankEdge)
+                    {
+                        // Accumulate erosion (integrate over time)
+                        // Bank erosion rate is in units of length/time, so multiply by dt to get cumulative erosion
+                        cumulativeBankErosion[i, w] += bank_erosion_rate[i, w] * dt;
+                    }
+                }
+            }
+        }
+        
+        // Process bank migration: convert FLUID cells to BANK when cumulative erosion exceeds threshold
+        ProcessBankMigration();
+        
         // Apply spatial smoothing to reduce numerical noise
         // Conservative smoothing to prevent mesh peaking while preserving physical behavior
         h_new = ApplySpatialSmoothing(h_new, smoothingFactor: 0.05);
         
         return (dh_dt, h_new);
+    }
+    
+    /// <summary>
+    /// Processes bank migration by converting FLUID cells to BANK cells when cumulative erosion exceeds threshold.
+    /// This simulates banks eroding and the river channel narrowing over time.
+    /// The bank edge moves inward as adjacent FLUID cells are converted to BANK.
+    /// </summary>
+    private void ProcessBankMigration()
+    {
+        // Process each cross-section
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            // Find the left bank edge: find the rightmost BANK cell (innermost from left)
+            int leftBankEdge = -1;
+            for (int w = 0; w < widthResolution - 1; w++)
+            {
+                if (cellType[i, w] == RiverCellType.BANK && cellType[i, w + 1] == RiverCellType.FLUID)
+                {
+                    leftBankEdge = w;
+                    break;
+                }
+            }
+            
+            // If no bank edge found at boundary, check if w=0 is bank
+            if (leftBankEdge == -1 && cellType[i, 0] == RiverCellType.BANK)
+            {
+                leftBankEdge = 0;
+            }
+            
+            // Check if we should migrate the left bank inward
+            if (leftBankEdge >= 0 && leftBankEdge < widthResolution - 1)
+            {
+                // Check cumulative erosion at the bank edge
+                if (cumulativeBankErosion[i, leftBankEdge] >= bankMigrationThreshold)
+                {
+                    // Find the adjacent FLUID cell (moving inward from left)
+                    int nextFluidW = leftBankEdge + 1;
+                    if (nextFluidW < widthResolution && cellType[i, nextFluidW] == RiverCellType.FLUID)
+                    {
+                        // Convert FLUID to BANK: bank migrates inward
+                        cellType[i, nextFluidW] = RiverCellType.BANK;
+                        waterDepth[i, nextFluidW] = 0.0;
+                        u[i, nextFluidW] = 0.0;
+                        v[i, nextFluidW] = 0.0;
+                        
+                        // Transfer cumulative erosion to new bank position (carry over excess)
+                        double excessErosion = cumulativeBankErosion[i, leftBankEdge] - bankMigrationThreshold;
+                        cumulativeBankErosion[i, nextFluidW] = excessErosion;
+                        cumulativeBankErosion[i, leftBankEdge] = 0.0;
+                    }
+                }
+            }
+            
+            // Find the right bank edge: find the leftmost BANK cell (innermost from right)
+            int rightBankEdge = -1;
+            for (int w = widthResolution - 1; w > 0; w--)
+            {
+                if (cellType[i, w] == RiverCellType.BANK && cellType[i, w - 1] == RiverCellType.FLUID)
+                {
+                    rightBankEdge = w;
+                    break;
+                }
+            }
+            
+            // If no bank edge found at boundary, check if rightmost is bank
+            if (rightBankEdge == -1 && cellType[i, widthResolution - 1] == RiverCellType.BANK)
+            {
+                rightBankEdge = widthResolution - 1;
+            }
+            
+            // Check if we should migrate the right bank inward
+            if (rightBankEdge > 0 && rightBankEdge < widthResolution)
+            {
+                // Check cumulative erosion at the bank edge
+                if (cumulativeBankErosion[i, rightBankEdge] >= bankMigrationThreshold)
+                {
+                    // Find the adjacent FLUID cell (moving inward from right)
+                    int nextFluidW = rightBankEdge - 1;
+                    if (nextFluidW >= 0 && cellType[i, nextFluidW] == RiverCellType.FLUID)
+                    {
+                        // Convert FLUID to BANK: bank migrates inward
+                        cellType[i, nextFluidW] = RiverCellType.BANK;
+                        waterDepth[i, nextFluidW] = 0.0;
+                        u[i, nextFluidW] = 0.0;
+                        v[i, nextFluidW] = 0.0;
+                        
+                        // Transfer cumulative erosion to new bank position (carry over excess)
+                        double excessErosion = cumulativeBankErosion[i, rightBankEdge] - bankMigrationThreshold;
+                        cumulativeBankErosion[i, nextFluidW] = excessErosion;
+                        cumulativeBankErosion[i, rightBankEdge] = 0.0;
+                    }
+                }
+            }
+        }
     }
     
     /// <summary>

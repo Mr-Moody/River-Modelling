@@ -1,0 +1,366 @@
+================================================================================
+1. PHYSICAL CONSTANTS (Fluid & Material Properties)
+================================================================================
+
+Water Properties:
+-----------------
+Nu (Kinematic Viscosity)          = 1e-6 m^2/s
+  - Default in Simulation.cs: 1e-6
+  - Default in RiverMeshPhysicsSolver: 1e-6
+  
+Rho (Water Density)               = 1000.0 kg/m^3
+  - Default in Simulation.cs: 1000.0
+  - Default in RiverMeshPhysicsSolver: 1000.0
+
+G (Gravitational Acceleration)    = 9.81 m/s^2
+  - Default in Simulation.cs: 9.81
+  - Default in RiverMeshPhysicsSolver: 9.81
+
+Sediment Properties:
+-------------------
+SedimentDensity                   = 2650.0 kg/m^3
+  - Default in Simulation.cs: 2650.0
+  - Default in RiverMeshPhysicsSolver: 2650.0
+  - Default in PhysicsSolver: 2650.0
+
+Porosity                          = 0.4 (dimensionless)
+  - Default in Simulation.cs: 0.4
+  - Default in RiverMeshPhysicsSolver: 0.4
+  - Default in PhysicsSolver: 0.4
+  - Used in Exner equation: porosityFactor = 1.0 / (1.0 - porosity) = 1.666...
+
+================================================================================
+2. SEDIMENT TRANSPORT & EROSION CONSTANTS
+================================================================================
+
+Critical Shear Stress (Bed)       = 0.05 Pa
+  - Default in Simulation.cs: 0.05
+  - Default in RiverMeshPhysicsSolver: 0.05
+  - Default in PhysicsSolver: 0.05
+
+Transport Coefficient             = 0.1 (dimensionless)
+  - Default in Simulation.cs: 0.1
+  - Default in RiverMeshPhysicsSolver: 0.1
+  - Default in PhysicsSolver: 0.1
+
+Sediment Transport Exponent       = 1.5 (Meyer-Peter & Müller type)
+  - Used in: qs = transportCoefficient * (tau_excess)^1.5
+
+Bank Erosion:
+-------------
+BankCriticalShear                 = 0.05 Pa (Recommended: 0.05-0.15)
+  - Default in Simulation.cs: 0.05
+  - Default in RiverMeshPhysicsSolver: 0.15
+  - Note: Lowered from 0.15 for faster erosion
+
+BankErosionRate                   = 2.0 (multiplier)
+  - Default in Simulation.cs: 2.0
+  - Default in RiverMeshPhysicsSolver: 0.3
+  - Default in PhysicsSolver: 0.3
+  - Note: Increased from 0.3 for faster migration
+  - Recommended range: 1.0-5.0 for visible migration
+
+BankMigrationThreshold            = 0.005 m (Recommended: 0.001-0.01)
+  - Default in Simulation.cs: 0.005
+  - Default in RiverMeshPhysicsSolver: 0.01
+  - Lower = faster migration
+
+================================================================================
+3. HYDRAULIC ROUGHNESS (Manning's Coefficient)
+================================================================================
+
+n (Manning's roughness - bed)     = 0.03
+  - Used for fluid cells in ComputeShearStress()
+
+n_bank (Manning's roughness - banks) = 0.05
+  - Used for bank cells in ComputeShearStress()
+
+================================================================================
+4. INITIAL CONDITIONS & DEFAULT VALUES
+================================================================================
+
+Initial Water Depth               = 0.5 m
+  - Default in Simulation.cs: 0.5f
+  - Default in InitializeFields(): 0.5
+  - Used as initial condition for all FLUID cells
+
+Initial Longitudinal Velocity (u) = 0.1 m/s
+  - Default in InitializeFields(): 0.1
+  - Initial flow along river direction
+
+Initial Transverse Velocity (v)   = 0.0 m/s
+  - Default in InitializeFields(): 0.0
+  - No initial cross-flow
+
+Initial Bed Elevation (h)         = 0.0 m
+  - Default in InitializeFields(): 0.0
+
+Equilibrium Water Depth           = 0.5 m
+  - Used in continuity equation relaxation: equilibriumDepth = 0.5
+
+Default Cross-Section Spacing     = 1.0 m
+  - Used if only one cross-section exists: ds[0] = 1.0
+
+================================================================================
+5. NUMERICAL STABILITY & LIMITS
+================================================================================
+
+Time Step Limits:
+-----------------
+TimeStep                          = 0.01 s (recommended max)
+  - Default in Simulation.cs: 0.01f
+  - Warning threshold: > 0.05f
+  - Critical threshold: > 0.1f (clamped to 0.01)
+  - Range: 0.001f - 0.1f
+
+IterationsPerFrame                = 1
+  - Default in Simulation.cs: 1
+  - Number of simulation steps per Unity frame
+
+Velocity Limits:
+---------------
+Maximum Velocity                  = 10.0 m/s
+  - Clamp limit for u and v velocities
+  - Applied in NavierStokesStep() multiple times
+
+Water Depth Limits:
+------------------
+Minimum Water Depth               = 0.0 m (clamp lower bound)
+Maximum Water Depth               = 10.0 m (clamp upper bound)
+Minimum Water Depth (continuity)  = 0.01 m
+Maximum Water Depth (continuity)  = 2.0 m
+
+Bed Elevation Limits:
+--------------------
+Minimum Bed Elevation             = -10.0 m
+Maximum Bed Elevation             = 10.0 m
+
+Maximum Bed Change Rate           = 0.02 m/s
+  - Used in ExnerEquation(): max_change_rate = 0.02
+
+Maximum Water Depth Change Rate   = 0.005 m/s
+  - Used in continuity equation: maxChangeRate = 0.005
+
+================================================================================
+6. BOUNDARY CONDITIONS
+================================================================================
+
+Bank Boundaries:
+---------------
+Bank Velocity (u)                 = 0.0 m/s (no-slip)
+Bank Velocity (v)                 = 0.0 m/s (no-slip)
+Bank Water Depth                  = 0.0 m
+
+Upstream Boundary:
+-----------------
+Cross-flow Velocity               = 0.0 m/s (no cross-flow at inlet)
+
+Downstream Boundary:
+-------------------
+Zero gradient (Neumann boundary condition)
+
+Flux Boundaries (Exner Equation):
+---------------------------------
+Zero flux at all boundaries:
+  - qs_s_bc[0, w] = 0.0 (upstream)
+  - qs_s_bc[numCrossSections-1, w] = 0.0 (downstream)
+  - qs_w_bc[i, 0] = 0.0 (left bank)
+  - qs_w_bc[i, widthResolution-1] = 0.0 (right bank)
+  - Corner cells: div_qs = 0.0
+
+================================================================================
+7. NUMERICAL SCHEME PARAMETERS
+================================================================================
+
+Bank Collision:
+--------------
+Reflection Coefficient            = 0.3 (30% reflection, 70% energy loss)
+  - Used in ApplyBoundaryConditions(): reflectionCoeff = 0.3
+
+Collision Stress Factor           = 1.5
+  - Multiplier for bank collision stress: collisionFactor = 1.5
+
+Continuity Equation:
+-------------------
+Relaxation Time                   = 0.01 s
+  - Used in SolveContinuityEquation(): relaxationTime = 0.01
+
+Flow Adjustment Factor            = 0.01
+  - Used in continuity equation: flowAdjustment = -div_u * 0.01
+  - Clamped to: -0.01 to 0.01
+
+Relaxation Term Weight            = 0.95
+  - Used in: dh_w_dt = 0.95 * relaxationTerm + 0.05 * flowAdjustment
+
+Flow Adjustment Weight            = 0.05
+  - Used in: dh_w_dt = 0.95 * relaxationTerm + 0.05 * flowAdjustment
+
+Centrifugal Force (Bend Effects):
+---------------------------------
+Curvature Threshold               = 1e-6
+  - Minimum curvature to apply centrifugal effect
+
+Centrifugal Scale Factor          = 0.2
+  - Used in: centrifugal_effect = ... * 0.2
+
+Minimum Radius                    = 1.0 m
+  - Avoids division by zero in curvature calculations
+
+Sediment Flux Direction:
+-----------------------
+Slope Factor                      = 0.3 (30% weight)
+  - Weight for bed slope in sediment flux direction
+  - Used in: slopeFactor = 0.3
+
+Flow Factor                       = 0.7 (70% weight)
+  - Weight for flow direction in sediment flux direction
+  - Used in: flowFactor = 1.0 - 0.3 = 0.7
+
+Bed Slope Effects:
+-----------------
+Maximum Slope                     = 0.3
+  - Used in slope reduction factor: max_slope = 0.3
+  - slope_factor = 1.0 / (1.0 + slope_mag / max_slope)
+
+Spatial Smoothing:
+-----------------
+Default Smoothing Factor          = 0.1
+  - Used in ApplySpatialSmoothing() default parameter
+
+Smoothing Factor (Exner)          = 0.05
+  - Used after Exner equation: smoothingFactor = 0.05
+
+Maximum Smoothing Change          = 0.01 m
+  - Per smoothing step: max_change = 0.01
+
+Bank Smoothing Weight             = 0.9 (bank), 0.1 (neighbor average)
+  - Used in: smoothed_value = 0.9 * h_data[i, w] + 0.1 * neighborAvg
+
+Boundary Smoothing:
+------------------
+Upstream Smoothing                = 0.7 (local), 0.3 (downstream neighbor)
+Downstream Smoothing              = 0.7 (local), 0.3 (upstream neighbor)
+
+================================================================================
+8. BANK EROSION & MIGRATION PARAMETERS
+================================================================================
+
+Bank Height Buffer                = 0.05 m
+  - Minimum height difference between bank and adjacent fluid
+  - Used in ApplyBedElevationBoundaryConditions(): bankHeightBuffer = 0.05
+
+Cumulative Bank Erosion Initial   = 0.0 m
+  - All bank cells initialized to zero erosion
+
+Bank Above Fluid Minimum          = 0.05 m
+  - Minimum height bank must be above adjacent fluid cells
+
+================================================================================
+9. CELL TYPE CONSTANTS
+================================================================================
+
+RiverCellType.FLUID               = 0
+  - Fluid cell (water flows here)
+
+RiverCellType.BANK                = 1
+  - Bank cell (no flow, can erode)
+
+RiverCellType.TERRAIN             = 3
+  - Terrain cell (surrounding terrain)
+
+================================================================================
+10. VISUALIZATION & RENDERING CONSTANTS
+================================================================================
+
+Shader Constants:
+----------------
+_MaxVelocity (initial)            = 1.0
+_MinVelocity                      = 0.0
+_Color                            = Color.white
+_Metallic                         = 0.0
+_Glossiness                       = 0.5
+
+Velocity Heatmap:
+----------------
+Minimum Velocity Threshold        = 0.01 m/s
+  - If maxVelocity < 0.01, set to 1.0 (avoid division by zero)
+
+Heatmap Color Gradient Thresholds (normalized 0-1):
+---------------------------------------------------
+Blue to Cyan transition            = 0.25
+  - Range: 0.0 - 0.25 (Blue -> Cyan)
+
+Cyan to Green transition           = 0.5
+  - Range: 0.25 - 0.5 (Cyan -> Green)
+
+Green to Yellow transition         = 0.75
+  - Range: 0.5 - 0.75 (Green -> Yellow)
+
+Yellow to Red transition           = 1.0
+  - Range: 0.75 - 1.0 (Yellow -> Red)
+
+Heatmap Color Values:
+--------------------
+Blue (zero velocity)              = RGB(0.0, 0.0, 1.0)
+Cyan                              = RGB(0.0, 1.0, 1.0)
+Green                             = RGB(0.0, 1.0, 0.0)
+Yellow                            = RGB(1.0, 1.0, 0.0)
+Red (max velocity)                = RGB(1.0, 0.0, 0.0)
+
+River Geometry Elevation Scale:
+-------------------------------
+RiverGeometryElevationScale       = 1.0
+  - Default in Simulation.cs: 1.0f
+  - Range: 0.1f - 10.0f
+  - Scale factor for applying bed elevation changes to geometry
+
+Zero Velocity Color               = Color(0, 0, 0, 1)
+  - Initial vertex color for zero velocity (blue in heatmap)
+
+================================================================================
+11. UTILITY & LOGGING CONSTANTS
+================================================================================
+
+Log Interval                      = 2.0 seconds
+  - Time between debug log messages: LOG_INTERVAL = 2f
+
+Log Step Frequency                = 100 steps
+  - Logs every 100 simulation steps
+
+Division by Zero Thresholds:
+---------------------------
+Minimum Depth (shear stress)      = 0.001 m
+  - Used in: R = Math.Max(waterDepth, 0.001)
+
+Minimum Spacing                   = 1e-6 m
+  - Used to avoid division by zero in smoothing
+
+Minimum Curvature                 = 1e-6
+  - Used to avoid division by zero in curvature calculations
+
+Minimum Magnitude Threshold       = 1e-10
+  - Used for velocity normalization checks
+
+Default Spacing                   = 1.0 m
+  - Used when only one cross-section exists
+
+================================================================================
+12. DEFAULT VALUES IN SCENE (SampleScene.unity)
+================================================================================
+
+From Unity scene configuration:
+-------------------------------
+TimeStep                          = 0.02
+IterationsPerFrame                = 3
+InitialWaterDepth                 = 0.5
+Nu                                = 0.000001
+Rho                               = 1000
+G                                 = 9.81
+SedimentDensity                   = 2650
+Porosity                          = 0.4
+CriticalShear                     = 0.05
+TransportCoefficient              = 0.1
+BankCriticalShear                 = 0.02
+BankErosionRate                   = 5
+BankMigrationThreshold            = 0.002
+

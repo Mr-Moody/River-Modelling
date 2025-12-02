@@ -249,8 +249,9 @@ MonoBehaviour:
   ShowSimulationGrid: 0
   UpdateRiverGeometry: 1
   RiverGeometryElevationScale: 1
-  EnableTerrain: 1
+  EnableTerrain: 0
   RunSimulation: 0
+  UseRiverMeshPhysics: 0
   GridWidth: 100
   GridHeight: 50
   CellSize: 1
@@ -312,9 +313,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4a6b17f8e430ec84397b7060c9f075d2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  riverMaterial: {fileID: 0}
+  riverMaterial: {fileID: 2100000, guid: 998c045c10fa48a4da71fd699af168aa, type: 2}
   csvFile: {fileID: 4900000, guid: f47069820c784434792232e8395b0781, type: 3}
-  scaleFactor: 0.001
+  scaleFactor: 0.0005
   defaultElevationY: 1
   simplificationFactor: 1
   useGridMesh: 1

@@ -5,8 +5,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 
-[RequireComponent(typeof(MeshFilter))]
-[RequireComponent(typeof(MeshRenderer))]
 public class CSVGeometryLoader : MonoBehaviour
 {
     [Header("Visualization")]
@@ -63,6 +61,23 @@ public class CSVGeometryLoader : MonoBehaviour
     public Mesh GetMesh()
     {
         return mesh;
+    }
+    
+    /// <summary>
+    /// Positions the river mesh child GameObject to align with the grid coordinate system.
+    /// Should be called after RiverToGrid is initialized.
+    /// </summary>
+    public void AlignMeshWithGrid(float gridMinX, float gridMinZ)
+    {
+        GameObject meshObject = transform.Find("RiverMesh")?.gameObject;
+        if (meshObject != null)
+        {
+            // The river mesh vertices are normalized to start at (0, 0)
+            // The grid uses coordinates starting at (gridMinX, gridMinZ) which may be negative due to padding
+            // Position the mesh GameObject to align with the grid
+            meshObject.transform.localPosition = new Vector3(gridMinX, 0, gridMinZ);
+            Debug.Log($"[CSVGeometryLoader] River mesh aligned with grid at position ({gridMinX:F2}, 0, {gridMinZ:F2})");
+        }
     }
 
     void Start()
@@ -243,29 +258,41 @@ public class CSVGeometryLoader : MonoBehaviour
 
     /// <summary>
     /// Sets up the MeshFilter and MeshRenderer components and applies the RiverMaterial.
+    /// Creates a child GameObject for the mesh so it can be moved independently.
     /// </summary>
     private void SetupMeshRenderer()
     {
-        // Get or add MeshFilter component
-        MeshFilter meshFilter = GetComponent<MeshFilter>();
-        if (meshFilter == null)
-        {
-            meshFilter = gameObject.AddComponent<MeshFilter>();
-        }
-        
         if (mesh == null)
         {
             Debug.LogError("[CSVGeometryLoader] Cannot setup renderer - mesh is null!");
             return;
         }
         
+        // Create or find a child GameObject for the mesh
+        GameObject meshObject = transform.Find("RiverMesh")?.gameObject;
+        if (meshObject == null)
+        {
+            meshObject = new GameObject("RiverMesh");
+            meshObject.transform.SetParent(transform);
+            meshObject.transform.localPosition = Vector3.zero;
+            meshObject.transform.localRotation = Quaternion.identity;
+            meshObject.transform.localScale = Vector3.one;
+        }
+        
+        // Get or add MeshFilter component on the child GameObject
+        MeshFilter meshFilter = meshObject.GetComponent<MeshFilter>();
+        if (meshFilter == null)
+        {
+            meshFilter = meshObject.AddComponent<MeshFilter>();
+        }
+        
         meshFilter.mesh = mesh;
 
-        // Get or add MeshRenderer component
-        MeshRenderer meshRenderer = GetComponent<MeshRenderer>();
+        // Get or add MeshRenderer component on the child GameObject
+        MeshRenderer meshRenderer = meshObject.GetComponent<MeshRenderer>();
         if (meshRenderer == null)
         {
-            meshRenderer = gameObject.AddComponent<MeshRenderer>();
+            meshRenderer = meshObject.AddComponent<MeshRenderer>();
         }
 
         // Apply RiverMaterial (use assigned material or try to load from Resources)
@@ -284,24 +311,51 @@ public class CSVGeometryLoader : MonoBehaviour
 
         if (materialToUse != null)
         {
+            // Check if the material uses the velocity heatmap shader, if not try to assign it
+            Shader velocityHeatmapShader = Shader.Find("Custom/RiverVelocityHeatmap");
+            if (velocityHeatmapShader != null && materialToUse.shader != velocityHeatmapShader)
+            {
+                // Try to switch to velocity heatmap shader if available
+                // This allows the material to display velocity-based heatmap
+                materialToUse.shader = velocityHeatmapShader;
+                materialToUse.SetFloat("_MaxVelocity", 1.0f); // Default max velocity
+                materialToUse.SetFloat("_MinVelocity", 0.0f);
+                Debug.Log("[CSVGeometryLoader] RiverMaterial found and switched to RiverVelocityHeatmap shader for velocity visualization.");
+            }
             meshRenderer.material = materialToUse;
         }
         else
         {
-            // Create a default material if none found - use a distinct color to make it visible
-            Shader standardShader = Shader.Find("Standard");
-            if (standardShader != null)
+            // Try to create material with velocity heatmap shader first
+            Shader velocityHeatmapShader = Shader.Find("Custom/RiverVelocityHeatmap");
+            if (velocityHeatmapShader != null)
             {
-                Material defaultMat = new Material(standardShader);
-                defaultMat.color = new Color(0.8f, 0.2f, 0.2f, 1f); // Red color to distinguish from grid
-                defaultMat.SetFloat("_Metallic", 0.3f);
+                Material defaultMat = new Material(velocityHeatmapShader);
+                defaultMat.SetColor("_Color", Color.white);
+                defaultMat.SetFloat("_MaxVelocity", 1.0f);
+                defaultMat.SetFloat("_MinVelocity", 0.0f);
+                defaultMat.SetFloat("_Metallic", 0.0f);
                 defaultMat.SetFloat("_Glossiness", 0.5f);
                 meshRenderer.material = defaultMat;
-                Debug.LogWarning($"[CSVGeometryLoader] RiverMaterial not found. Using default material. Please assign Materials/RiverMaterial in the Inspector.");
+                Debug.Log("[CSVGeometryLoader] RiverMaterial not found. Created material with RiverVelocityHeatmap shader for velocity visualization.");
             }
             else
             {
-                Debug.LogError("[CSVGeometryLoader] Could not find Standard shader or create default material.");
+                // Fallback to Standard shader if velocity heatmap shader not found
+                Shader standardShader = Shader.Find("Standard");
+                if (standardShader != null)
+                {
+                    Material defaultMat = new Material(standardShader);
+                    defaultMat.color = new Color(0.8f, 0.2f, 0.2f, 1f); // Red color to distinguish from grid
+                    defaultMat.SetFloat("_Metallic", 0.3f);
+                    defaultMat.SetFloat("_Glossiness", 0.5f);
+                    meshRenderer.material = defaultMat;
+                    Debug.LogWarning($"[CSVGeometryLoader] RiverMaterial not found and RiverVelocityHeatmap shader not available. Using Standard shader. Please assign Materials/RiverMaterial in the Inspector.");
+                }
+                else
+                {
+                    Debug.LogError("[CSVGeometryLoader] Could not find Standard shader or create default material.");
+                }
             }
         }
         

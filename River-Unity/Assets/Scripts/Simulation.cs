@@ -4,22 +4,17 @@ using System.Collections;
 
 /// <summary>
 /// The main simulation controller class.
-/// Listens to mesh updates from RiverGeometry and runs the physics simulation,
-/// then sends results back to MeshGrid for visualization.
+/// Runs physics simulation directly on the river mesh using river-local coordinates.
 /// </summary>
 public class SimulationController : MonoBehaviour
 {
     // --- Integration Component ---
     [Header("Geometry Integration")]
-    [Tooltip("Reference to the RiverGeometry GameObject containing MeshGrid component.")]
+    [Tooltip("Reference to the RiverGeometry GameObject containing CSVGeometryLoader component.")]
     public GameObject RiverGeometry;
     
-    [Header("Visualization")]
-    [Tooltip("If enabled, shows the simulation grid mesh (white grid). Disable to hide it.")]
-    public bool ShowSimulationGrid = false;
-    
     [Header("River Geometry Update")]
-    [Tooltip("If enabled, the original red river geometry will be updated based on simulation results (erosion/deposition).")]
+    [Tooltip("If enabled, the river geometry will be updated based on simulation results (erosion/deposition).")]
     public bool UpdateRiverGeometry = true;
     
     [Tooltip("Scale factor for applying bed elevation changes to river geometry. Higher values make changes more visible.")]
@@ -28,10 +23,8 @@ public class SimulationController : MonoBehaviour
     
     [Header("Terrain")]
     [Tooltip("If enabled, generates and updates 3D terrain mesh around the river.")]
-    public bool EnableTerrain = true;
+    public bool EnableTerrain = false; // Disabled by default since we're not using grid anymore
     
-    private MeshGrid meshGrid;
-    private RiverToGrid riverToGrid;
     private CSVGeometryLoader geometryLoader;
     private TerrainMesh terrainMesh;
 
@@ -42,17 +35,12 @@ public class SimulationController : MonoBehaviour
     
     private bool lastRunSimulationState = false;
 
-    [Header("Grid & Time")]
-    // NOTE: GridWidth and GridHeight will be OVERRIDDEN by RiverToGrid calculations.
-    [HideInInspector] public int GridWidth;
-    [HideInInspector] public int GridHeight;
-
-    public float CellSize = 0.5f;
+    [Header("Time")]
     [Range(0.001f, 0.1f)]
     [Tooltip("Time step for simulation. Should be small (0.01 or less) for stability. Larger values cause numerical instability.")]
     public float TimeStep = 0.01f;
     public int IterationsPerFrame = 1;
-    public float InitialWaterDepth = 0.5f; // New initial condition parameter
+    public float InitialWaterDepth = 0.5f;
 
     // --- Physics Parameters (Passed to Solver) ---
     [Header("Physics Parameters")]
@@ -64,28 +52,20 @@ public class SimulationController : MonoBehaviour
     public double CriticalShear = 0.05;
     public double TransportCoefficient = 0.1;
 
-    private PhysicsSolver solver;
-
-    // --- Data Arrays (Pointers to Solver Data) ---
-    private double[,] h; 		 // Bed Elevation
-    private double[,] waterDepth; 	 // Water Depth
-    private double[,] u; 		 // X-Velocity
-    private double[,] v; 		 // Y-Velocity
+    private RiverMeshPhysicsSolver riverMeshSolver;
 
     // --- Unity Lifecycle Methods ---
 
     void OnEnable()
     {
-        // Subscribe to mesh update events from MeshGrid
-        MeshGrid.OnMeshUpdated += HandleMeshUpdated;
-        RiverToGrid.OnGridInitialized += HandleGridInitialized;
+        // Subscribe to mesh loaded event from CSVGeometryLoader
+        CSVGeometryLoader.OnMeshLoaded += HandleMeshLoaded;
     }
 
     void OnDisable()
     {
         // Unsubscribe from events
-        MeshGrid.OnMeshUpdated -= HandleMeshUpdated;
-        RiverToGrid.OnGridInitialized -= HandleGridInitialized;
+        CSVGeometryLoader.OnMeshLoaded -= HandleMeshLoaded;
     }
 
     void Start()
@@ -95,7 +75,22 @@ public class SimulationController : MonoBehaviour
         // Get references to components on RiverGeometry
         EnsureComponentReferences();
         
-        Debug.Log("[SimulationController] ✓ Component references obtained. Waiting for grid initialization event...");
+        // Try to initialize if mesh is already loaded
+        if (geometryLoader != null)
+        {
+            Mesh riverMesh = geometryLoader.GetMesh();
+            if (riverMesh != null)
+            {
+                HandleMeshLoaded(riverMesh);
+            }
+            else
+            {
+                // Even if mesh isn't loaded yet, ensure shader is ready
+                EnsureVelocityShader();
+            }
+        }
+        
+        Debug.Log("[SimulationController] ✓ Component references obtained.");
     }
 
     /// <summary>
@@ -108,89 +103,52 @@ public class SimulationController : MonoBehaviour
             Debug.LogError("SimulationController: RiverGeometry GameObject reference is missing!");
             return;
         }
-
-        if (meshGrid == null)
-        {
-            meshGrid = RiverGeometry.GetComponent<MeshGrid>();
-            if (meshGrid == null)
-            {
-                Debug.LogError("SimulationController: MeshGrid component not found on RiverGeometry GameObject!");
-            }
-        }
-
-        if (riverToGrid == null)
-        {
-            riverToGrid = RiverGeometry.GetComponent<RiverToGrid>();
-            if (riverToGrid == null)
-            {
-                Debug.LogError("SimulationController: RiverToGrid component not found on RiverGeometry GameObject!");
-            }
-        }
         
         if (geometryLoader == null)
         {
             geometryLoader = RiverGeometry.GetComponent<CSVGeometryLoader>();
             if (geometryLoader == null)
             {
-                Debug.LogWarning("SimulationController: CSVGeometryLoader component not found. River geometry updates will be disabled.");
+                Debug.LogError("SimulationController: CSVGeometryLoader component not found on RiverGeometry GameObject!");
             }
         }
         
         if (terrainMesh == null && EnableTerrain)
         {
-            // Try to find TerrainMesh on RiverGeometry or create it
+            // Try to find TerrainMesh on RiverGeometry
             terrainMesh = RiverGeometry.GetComponent<TerrainMesh>();
             if (terrainMesh == null)
             {
-                // Create a child GameObject for terrain
-                // Position it at the same location as RiverGeometry so terrain aligns with river
-                GameObject terrainObject = new GameObject("Terrain");
-                terrainObject.transform.SetParent(RiverGeometry.transform);
-                terrainObject.transform.localPosition = Vector3.zero; // Will be repositioned in InitializeTerrain
-                terrainObject.transform.localRotation = Quaternion.identity;
-                terrainObject.transform.localScale = Vector3.one;
-                terrainMesh = terrainObject.AddComponent<TerrainMesh>();
-                terrainMesh.riverToGrid = riverToGrid;
-                Debug.Log("[SimulationController] Created TerrainMesh component");
+                Debug.LogWarning("[SimulationController] TerrainMesh not found. Terrain generation is disabled.");
             }
         }
     }
 
     /// <summary>
-    /// Handles grid initialization event from RiverToGrid.
+    /// Handles mesh loaded event from CSVGeometryLoader.
     /// </summary>
-    private void HandleGridInitialized(int gridWidth, int gridHeight, float minX, float minZ, float maxX, float maxZ)
+    private void HandleMeshLoaded(Mesh mesh)
     {
-        Debug.Log($"[SimulationController] HandleGridInitialized called - Grid: {gridWidth}x{gridHeight}");
-        
-        if (solver != null)
+        if (mesh == null)
         {
-            Debug.Log("[SimulationController] Solver already initialized, skipping...");
-            // Already initialized, skip
+            Debug.LogWarning("[SimulationController] Received null mesh from CSVGeometryLoader.");
             return;
         }
 
-        // Ensure component references are set (in case event fires before Start())
+        if (riverMeshSolver != null)
+        {
+            Debug.Log("[SimulationController] River mesh solver already initialized, skipping...");
+            return;
+        }
+
+        // Ensure component references are set
         EnsureComponentReferences();
 
-        Debug.Log("[SimulationController] Starting simulation initialization...");
-        InitializeSimulation(gridWidth, gridHeight, minX, minZ);
+        Debug.Log("[SimulationController] Starting river mesh physics initialization...");
+        InitializeRiverMeshSimulation();
         
-        // Initialize terrain after grid is ready
-        if (EnableTerrain && terrainMesh != null && riverToGrid != null && riverToGrid.isInitialized)
-        {
-            terrainMesh.InitializeTerrain();
-            Debug.Log("[SimulationController] ✓ Terrain initialized after grid");
-        }
-    }
-
-    /// <summary>
-    /// Handles mesh update event from MeshGrid (called when mesh is first created or updated).
-    /// </summary>
-    private void HandleMeshUpdated(Mesh mesh)
-    {
-        // Mesh has been updated, simulation will use it in Update()
-        // This is mainly for initialization tracking
+        // Initialize vertex colors for shader visualization
+        InitializeVertexColors();
     }
 
     private float lastLogTime = 0f;
@@ -212,12 +170,12 @@ public class SimulationController : MonoBehaviour
         // Check if RunSimulation state changed
         if (RunSimulation != lastRunSimulationState)
         {
-            Debug.Log($"[SimulationController] RunSimulation toggled to: {RunSimulation}. Solver initialized: {solver != null}");
+            Debug.Log($"[SimulationController] RunSimulation toggled to: {RunSimulation}. Solver initialized: {riverMeshSolver != null}");
             lastRunSimulationState = RunSimulation;
         }
         
         // Only run simulation if solver is initialized and RunSimulation toggle is on
-        if (solver == null)
+        if (riverMeshSolver == null)
         {
             return; // Solver not initialized yet
         }
@@ -225,9 +183,14 @@ public class SimulationController : MonoBehaviour
         if (!RunSimulation)
         {
             // Simulation is paused - still update visualization if mesh is ready
-            if (meshGrid != null && meshGrid.GetMesh() != null)
+            if (UpdateRiverGeometry && geometryLoader != null)
             {
-                UpdateVisualization();
+                UpdateRiverGeometryMesh();
+            }
+            else
+            {
+                // Even when paused, ensure vertex colors are initialized for shader visualization
+                InitializeVertexColors();
             }
             return;
         }
@@ -242,319 +205,216 @@ public class SimulationController : MonoBehaviour
         // Run the simulation a fixed number of times per frame for stability
         for (int i = 0; i < IterationsPerFrame; i++)
         {
-            RunTimeStep(TimeStep);
+            RunRiverMeshTimeStep(TimeStep);
         }
 
         // Update the visual mesh with the new data
-        UpdateVisualization();
+        if (UpdateRiverGeometry)
+        {
+            UpdateRiverGeometryMesh();
+        }
     }
 
     // --- Initialization and Setup ---
 
-    private void InitializeSimulation(int gridWidth, int gridHeight, float minX, float minZ)
+    /// <summary>
+    /// Initializes the river mesh physics simulation.
+    /// </summary>
+    private void InitializeRiverMeshSimulation()
     {
-        Debug.Log("[SimulationController] InitializeSimulation() called");
+        Debug.Log("[SimulationController] InitializeRiverMeshSimulation() called");
         
-        // Ensure component references are set (in case event fires before Start())
+        // Ensure component references are set
         EnsureComponentReferences();
 
-        if (riverToGrid == null)
+        if (geometryLoader == null)
         {
-            Debug.LogError("SimulationController: RiverToGrid reference is missing! Make sure RiverGeometry GameObject has a RiverToGrid component.");
+            Debug.LogError("SimulationController: CSVGeometryLoader reference is missing! Make sure RiverGeometry GameObject has a CSVGeometryLoader component.");
             return;
         }
 
-        // Validate grid dimensions
-        if (gridWidth <= 0 || gridHeight <= 0)
+        // Initialize river mesh-based physics solver
+        Mesh riverMesh = geometryLoader.GetMesh();
+        if (riverMesh == null || riverMesh.vertices == null)
         {
-            Debug.LogError($"SimulationController: Invalid grid dimensions received: {gridWidth}x{gridHeight}. Cannot initialize simulation.");
+            Debug.LogError("[SimulationController] River mesh is null or has no vertices. Cannot initialize simulation.");
             return;
         }
 
-        // Set Grid dimensions
-        GridWidth = gridWidth;
-        GridHeight = gridHeight;
-        float cellSize = riverToGrid.GetCellSize();
+        if (!geometryLoader.useGridMesh)
+        {
+            Debug.LogError("[SimulationController] River mesh must be in grid format (useGridMesh must be enabled in CSVGeometryLoader). Cannot initialize simulation.");
+            return;
+        }
 
-        Debug.Log($"[SimulationController] Step 1: Creating PhysicsSolver for {GridWidth}x{GridHeight} grid...");
+        Vector3[] vertices = riverMesh.vertices;
+        int totalVertices = vertices.Length;
+        int widthRes = geometryLoader.widthResolution;
         
-        // Initialize the Physics Solver
-        solver = new PhysicsSolver(
-            GridWidth, GridHeight, cellSize,
+        // Calculate number of cross-sections
+        // For grid mesh: totalVertices = numCrossSections * widthResolution
+        if (totalVertices % widthRes != 0)
+        {
+            Debug.LogError($"[SimulationController] River mesh vertex count ({totalVertices}) is not divisible by widthResolution ({widthRes}). Cannot initialize river mesh physics.");
+            return;
+        }
+
+        int numCrossSections = totalVertices / widthRes;
+        
+        Debug.Log($"[SimulationController] Step 1: Creating RiverMeshPhysicsSolver for {numCrossSections} cross-sections x {widthRes} width points...");
+        
+        riverMeshSolver = new RiverMeshPhysicsSolver(
+            vertices, numCrossSections, widthRes,
             nu: Nu, rho: Rho, g: G,
             sedimentDensity: SedimentDensity,
             porosity: Porosity,
             criticalShear: CriticalShear,
-            transportCoefficient: TransportCoefficient
+            transportCoefficient: TransportCoefficient,
+            bankCriticalShear: 0.15,
+            bankErosionRate: 0.3
         );
 
-        Debug.Log("[SimulationController] ✓ PhysicsSolver created");
-        Debug.Log("[SimulationController] Step 2: Generating cell types and depths (this may take a moment for large grids)...");
-
-        // Set initial conditions using the loaded geometry
-        riverToGrid.GenerateCellTypesAndDepths(solver, InitialWaterDepth);
-
-        // Count fluid cells to verify initialization
-        int fluidCellCount = 0;
-        for (int i = 0; i < GridWidth; i++)
+        // Update cell types based on geometry
+        riverMeshSolver.UpdateCellTypes(vertices);
+        
+        // Set initial water depth
+        for (int i = 0; i < numCrossSections; i++)
         {
-            for (int j = 0; j < GridHeight; j++)
+            for (int w = 0; w < widthRes; w++)
             {
-                if (solver.cellType[i, j] == RiverCellType.FLUID)
+                if (riverMeshSolver.cellType[i, w] == RiverCellType.FLUID)
                 {
-                    fluidCellCount++;
+                    riverMeshSolver.waterDepth[i, w] = InitialWaterDepth;
                 }
             }
         }
         
-        Debug.Log($"[SimulationController] ✓ Cell types and depths generated. Found {fluidCellCount} fluid cells out of {GridWidth * GridHeight} total cells.");
+        Debug.Log("[SimulationController] ✓ RiverMeshPhysicsSolver created");
+        Debug.Log("[SimulationController] Step 2: River mesh solver initialized with river-local coordinates (u along river, v across river)");
         
-        if (fluidCellCount == 0)
-        {
-            Debug.LogError("[SimulationController] ERROR: No fluid cells found! The simulation cannot run. " +
-                          "Check that the grid cellSize is small enough to capture the river's sinuous shape. " +
-                          "The river geometry may be too small relative to the grid cell size.");
-        }
-        Debug.Log("[SimulationController] Step 3: Caching array references...");
-
-        // Cache array references from the solver
-        h = solver.h;
-        waterDepth = solver.waterDepth;
-        u = solver.u;
-        v = solver.v;
-
-        Debug.Log("[SimulationController] Step 4: Waiting for mesh to be ready...");
+        // Ensure velocity heatmap shader is applied to the material
+        EnsureVelocityShader();
         
-        // Hide simulation grid if disabled
-        if (!ShowSimulationGrid)
+        Debug.Log($"[SimulationController] ✓ Initialization complete. Simulation is {(RunSimulation ? "RUNNING" : "PAUSED")}.");
+    }
+    
+    /// <summary>
+    /// Ensures the river mesh material uses the velocity heatmap shader.
+    /// </summary>
+    private void EnsureVelocityShader()
+    {
+        if (geometryLoader == null || RiverGeometry == null)
+            return;
+            
+        GameObject riverMeshObject = RiverGeometry.transform.Find("RiverMesh")?.gameObject;
+        if (riverMeshObject == null)
+            return;
+            
+        MeshRenderer mr = riverMeshObject.GetComponent<MeshRenderer>();
+        if (mr == null)
+            return;
+            
+        Material mat = mr.material;
+        if (mat == null)
+            return;
+            
+        // Check if material already uses velocity heatmap shader
+        Shader velocityHeatmapShader = Shader.Find("Custom/RiverVelocityHeatmap");
+        if (velocityHeatmapShader != null && mat.shader != velocityHeatmapShader)
         {
-            // Hide grid mesh - will be done after mesh is created
-            StartCoroutine(HideSimulationGridWhenReady());
+            mat.shader = velocityHeatmapShader;
+            mat.SetFloat("_MaxVelocity", 1.0f);
+            mat.SetFloat("_MinVelocity", 0.0f);
+            mat.SetColor("_Color", Color.white);
+            mat.SetFloat("_Metallic", 0.0f);
+            mat.SetFloat("_Glossiness", 0.5f);
+            Debug.Log("[SimulationController] Applied RiverVelocityHeatmap shader to river material.");
         }
-
-        // Don't update visualization immediately - wait for MeshGrid to be initialized via event
-        // The MeshGrid will be initialized by the HandleGridInitialized event handler
-        // We'll update visualization in the next frame or when mesh is ready
-        StartCoroutine(UpdateVisualizationWhenReady());
-
-        Debug.Log($"[SimulationController] ✓ Initialization complete: Grid Size {GridWidth}x{GridHeight}. Simulation is {(RunSimulation ? "RUNNING" : "PAUSED")}.");
     }
 
     // --- Core Simulation Logic ---
 
     private int stepCount = 0;
-    private double lastMaxVelocity = 0.0;
 
-    private void RunTimeStep(float dt)
+    /// <summary>
+    /// Runs one time step using the river mesh physics solver (river-local coordinates).
+    /// </summary>
+    private void RunRiverMeshTimeStep(float dt)
     {
-        // Safety check: ensure solver is initialized
-        if (solver == null)
+        if (riverMeshSolver == null)
         {
-            Debug.LogWarning("RunTimeStep called but solver is not initialized. Check initialization errors.");
+            Debug.LogWarning("RunRiverMeshTimeStep called but riverMeshSolver is not initialized.");
             return;
         }
 
-        // Track max velocity for debugging (before step)
-        double maxVelBefore = 0.0;
-        for (int i = 0; i < solver.nx; i++)
-        {
-            for (int j = 0; j < solver.ny; j++)
-            {
-                double vel = Math.Sqrt(solver.u[i, j] * solver.u[i, j] + solver.v[i, j] * solver.v[i, j]);
-                if (vel > maxVelBefore) maxVelBefore = vel;
-            }
-        }
-
-        // 1. Solve the Shallow Water Equations (updates u, v, waterDepth)
-        solver.NavierStokesStep(dt);
-
-        // 2. Compute the Bed Shear Stress based on new flow fields
-        double[,] tau = solver.ComputeShearStress();
-
-        // 3. Compute the Sediment Flux Vector
-        (double[,] qs_x, double[,] qs_y) = solver.ComputeSedimentFluxVector(tau);
-
-        // 4. Solve the Exner Equation (updates h)
-        // The solver updates h internally, returning the new elevation field
-        // Note: The structure requires the PhysicsSolver class to handle the Exner equation update logic.
-        // Assuming ExnerEquation updates solver.h internally and returns the updated array reference.
-        (_, solver.h) = solver.ExnerEquation(qs_x, qs_y, dt);
-
-        // 5. Validate and clamp all values to prevent instability
-        ValidateAndClampValues();
-
-        // Update the cached references (h is updated since it points to solver.h)
+        // Run Navier-Stokes step in river-local coordinates
+        riverMeshSolver.NavierStokesStep(dt);
+        
+        // Compute bed shear stress
+        double[,] tau = riverMeshSolver.ComputeShearStress();
+        
+        // Compute sediment flux vector
+        (double[,] qs_s, double[,] qs_w) = riverMeshSolver.ComputeSedimentFluxVector(tau);
+        
+        // Solve Exner equation (updates bed elevation h)
+        (_, riverMeshSolver.h) = riverMeshSolver.ExnerEquation(qs_s, qs_w, dt);
         
         stepCount++;
         
-        // Log every 100 steps to verify simulation is running
+        // Log periodically
         if (stepCount % 100 == 0)
         {
-            double newMaxVel = 0.0;
-            for (int i = 0; i < solver.nx; i++)
+            double maxVel = 0.0;
+            for (int i = 0; i < riverMeshSolver.numCrossSections; i++)
             {
-                for (int j = 0; j < solver.ny; j++)
+                for (int w = 0; w < riverMeshSolver.widthResolution; w++)
                 {
-                    double vel = Math.Sqrt(solver.u[i, j] * solver.u[i, j] + solver.v[i, j] * solver.v[i, j]);
-                    if (vel > newMaxVel) newMaxVel = vel;
+                    double vel = riverMeshSolver.GetVelocityMagnitude(i, w);
+                    if (vel > maxVel) maxVel = vel;
                 }
             }
-            
-            Debug.Log($"[SimulationController] Step {stepCount}: Max velocity changed from {lastMaxVelocity:F6} to {newMaxVel:F6}");
-            lastMaxVelocity = newMaxVel;
+            Debug.Log($"[SimulationController] River mesh step {stepCount}: Max velocity = {maxVel:F6} m/s (u along river, v across river)");
         }
     }
     
-    private void ValidateAndClampValues()
-    {
-        if (solver == null) return;
-        
-        bool hadInvalidValues = false;
-        double maxVelocity = 10.0;
-        double maxDepth = 10.0;
-        double maxElevation = 10.0;
-        
-        for (int i = 0; i < solver.nx; i++)
-        {
-            for (int j = 0; j < solver.ny; j++)
-            {
-                // Check for NaN or Infinity
-                if (double.IsNaN(solver.u[i, j]) || double.IsInfinity(solver.u[i, j]))
-                {
-                    solver.u[i, j] = 0.0;
-                    hadInvalidValues = true;
-                }
-                if (double.IsNaN(solver.v[i, j]) || double.IsInfinity(solver.v[i, j]))
-                {
-                    solver.v[i, j] = 0.0;
-                    hadInvalidValues = true;
-                }
-                if (double.IsNaN(solver.waterDepth[i, j]) || double.IsInfinity(solver.waterDepth[i, j]))
-                {
-                    solver.waterDepth[i, j] = (solver.cellType[i, j] == RiverCellType.FLUID) ? InitialWaterDepth : 0.0;
-                    hadInvalidValues = true;
-                }
-                if (double.IsNaN(solver.h[i, j]) || double.IsInfinity(solver.h[i, j]))
-                {
-                    solver.h[i, j] = 0.0;
-                    hadInvalidValues = true;
-                }
-                
-                // Clamp to reasonable ranges
-                solver.u[i, j] = Math.Max(-maxVelocity, Math.Min(maxVelocity, solver.u[i, j]));
-                solver.v[i, j] = Math.Max(-maxVelocity, Math.Min(maxVelocity, solver.v[i, j]));
-                solver.waterDepth[i, j] = Math.Max(0.0, Math.Min(maxDepth, solver.waterDepth[i, j]));
-                solver.h[i, j] = Math.Max(-maxElevation, Math.Min(maxElevation, solver.h[i, j]));
-            }
-        }
-        
-        if (hadInvalidValues && stepCount % 100 == 0)
-        {
-            Debug.LogWarning($"[SimulationController] Detected invalid values (NaN/Inf) at step {stepCount}. Values have been reset. Check TimeStep - it may be too large.");
-        }
-    }
 
     // --- Visualization ---
 
-    private System.Collections.IEnumerator UpdateVisualizationWhenReady()
+    /// <summary>
+    /// Initializes vertex colors for the velocity shader, even when simulation hasn't run.
+    /// This ensures the shader can display something even with zero velocity.
+    /// </summary>
+    private void InitializeVertexColors()
     {
-        // Wait a frame to ensure MeshGrid has been initialized
-        yield return null;
-        
-        // Wait until mesh dimensions match (check every frame for up to 1 second)
-        float timeout = 1f;
-        float elapsed = 0f;
-        
-        while (elapsed < timeout)
+        if (geometryLoader == null)
+            return;
+            
+        Mesh riverMesh = geometryLoader.GetMesh();
+        if (riverMesh == null || riverMesh.vertices == null)
+            return;
+            
+        // Initialize colors if not already set
+        Color[] colors = riverMesh.colors;
+        if (colors == null || colors.Length != riverMesh.vertices.Length)
         {
-            if (meshGrid != null && solver != null)
+            colors = new Color[riverMesh.vertices.Length];
+            // Initialize with zero velocity (blue)
+            for (int i = 0; i < colors.Length; i++)
             {
-                // Check if mesh is ready by verifying dimensions
-                // This is a simple check - in a real scenario you might want a more robust check
-                yield return null;
-                elapsed += Time.deltaTime;
-                
-                // Try to update - UpdateMesh will return early if dimensions don't match
-                UpdateVisualization();
-                
-                // If we got here without error, mesh is likely ready
-                Debug.Log("[SimulationController] ✓ Mesh visualization updated");
-                yield break;
+                colors[i] = new Color(0, 0, 0, 1); // Zero velocity = blue in heatmap
             }
-            yield return null;
-            elapsed += Time.deltaTime;
-        }
-        
-        Debug.LogWarning("[SimulationController] Timeout waiting for mesh to be ready");
-    }
-    
-    private System.Collections.IEnumerator HideSimulationGridWhenReady()
-    {
-        // Wait a few frames for mesh to be created
-        yield return new WaitForSeconds(0.5f);
-        
-        if (RiverGeometry != null)
-        {
-            GameObject gridMeshObject = RiverGeometry.transform.Find("SimulationGridMesh")?.gameObject;
-            if (gridMeshObject != null)
+            riverMesh.colors = colors;
+            
+            // Update mesh filter
+            GameObject riverMeshObject = RiverGeometry.transform.Find("RiverMesh")?.gameObject;
+            if (riverMeshObject != null)
             {
-                gridMeshObject.SetActive(false);
-                Debug.Log("[SimulationController] Simulation grid mesh hidden");
-            }
-            else
-            {
-                // Try finding it by component
-                MeshRenderer[] renderers = RiverGeometry.GetComponentsInChildren<MeshRenderer>();
-                foreach (var renderer in renderers)
+                MeshFilter mf = riverMeshObject.GetComponent<MeshFilter>();
+                if (mf != null)
                 {
-                    if (renderer.gameObject.name.Contains("SimulationGrid") || renderer.gameObject.name.Contains("Grid"))
-                    {
-                        renderer.gameObject.SetActive(false);
-                        Debug.Log("[SimulationController] Simulation grid mesh hidden (found by component)");
-                        break;
-                    }
+                    mf.sharedMesh = riverMesh;
                 }
             }
-        }
-    }
-
-    private int visualizationUpdateCount = 0;
-    private float lastVizLogTime = 0f;
-
-    private void UpdateVisualization()
-    {
-        // Update simulation grid mesh only if enabled
-        if (ShowSimulationGrid && meshGrid != null && solver != null)
-        {
-            // Pass all relevant data arrays to the MeshGrid for visualization
-            meshGrid.UpdateMesh(h, waterDepth, u, v, solver.cellType);
-            
-            visualizationUpdateCount++;
-            
-            // Log visualization updates periodically
-            if (Time.time - lastVizLogTime > 5f)
-            {
-                Debug.Log($"[SimulationController] Visualization updated {visualizationUpdateCount} times. MeshGrid: {(meshGrid != null ? "OK" : "NULL")}, Solver: {(solver != null ? "OK" : "NULL")}");
-                lastVizLogTime = Time.time;
-            }
-        }
-        else if (meshGrid != null && solver != null)
-        {
-            // Grid is hidden but we still track updates
-            visualizationUpdateCount++;
-        }
-        
-        // Update terrain mesh if enabled
-        if (EnableTerrain && terrainMesh != null && solver != null && riverToGrid != null)
-        {
-            float cellSize = riverToGrid.GetCellSize();
-            terrainMesh.UpdateTerrain(h, solver.cellType, cellSize, riverToGrid.MinX, riverToGrid.MinZ, GridWidth, GridHeight);
-        }
-        
-        // Update the original red river geometry if enabled
-        if (UpdateRiverGeometry && geometryLoader != null && solver != null)
-        {
-            UpdateRiverGeometryMesh();
         }
     }
     
@@ -562,6 +422,8 @@ public class SimulationController : MonoBehaviour
     /// Updates the original red river geometry mesh based on simulation results.
     /// Maps simulation grid elevations to river geometry vertices.
     /// Works with both unstructured meshes (original strip mesh) and grid meshes (remeshed structure).
+    /// Also updates vertex colors with velocity data for heatmap visualization.
+    /// Supports both grid-based and river mesh-based physics solvers.
     /// </summary>
     private void UpdateRiverGeometryMesh()
     {
@@ -572,54 +434,99 @@ public class SimulationController : MonoBehaviour
         }
         
         Vector3[] riverVertices = riverMesh.vertices;
-        float cellSize = riverToGrid.GetCellSize();
-        float minX = riverToGrid.MinX;
-        float minZ = riverToGrid.MinZ;
         
-        // Update each vertex in the river geometry based on nearest grid cell elevation
-        for (int i = 0; i < riverVertices.Length; i++)
+        // Initialize or resize color array
+        Color[] colors = riverMesh.colors;
+        if (colors == null || colors.Length != riverVertices.Length)
         {
-            Vector3 vertex = riverVertices[i];
-            
-            // Convert vertex world position to grid coordinates
-            float gridX = (vertex.x - minX) / cellSize;
-            float gridZ = (vertex.z - minZ) / cellSize;
-            
-            // Clamp to valid grid bounds
-            int xIdx = Mathf.Clamp(Mathf.RoundToInt(gridX), 0, solver.nx - 1);
-            int zIdx = Mathf.Clamp(Mathf.RoundToInt(gridZ), 0, solver.ny - 1);
-            
-            // Get bed elevation from simulation (h) and apply scale factor
-            float bedElevation = (float)solver.h[xIdx, zIdx] * RiverGeometryElevationScale;
-            
-            // Update vertex Y coordinate (elevation)
-            // Preserve original elevation offset if needed, or use bed elevation directly
-            riverVertices[i] = new Vector3(vertex.x, bedElevation, vertex.z);
+            colors = new Color[riverVertices.Length];
         }
         
-        // Apply updated vertices to mesh
+        float maxVelocity = 0.0f;
+        
+        if (riverMeshSolver == null || !geometryLoader.useGridMesh)
+        {
+            return; // Solver not initialized or mesh not in grid format
+        }
+
+        // Use river mesh solver (direct mapping - vertices correspond to solver cells)
+        int numCrossSections = riverMeshSolver.numCrossSections;
+        int widthResolution = riverMeshSolver.widthResolution;
+        
+        // Find max velocity for normalization
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                double vel = riverMeshSolver.GetVelocityMagnitude(i, w);
+                if (vel > maxVelocity) maxVelocity = (float)vel;
+            }
+        }
+        if (maxVelocity < 0.01f) maxVelocity = 1.0f;
+        
+        // Update vertices directly from river mesh solver
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                int vertexIdx = i * widthResolution + w;
+                if (vertexIdx >= riverVertices.Length) continue;
+                
+                Vector3 vertex = riverVertices[vertexIdx];
+                
+                // Update elevation from bed elevation
+                float bedElevation = (float)riverMeshSolver.h[i, w] * RiverGeometryElevationScale;
+                riverVertices[vertexIdx] = new Vector3(vertex.x, bedElevation, vertex.z);
+                
+                // Get velocity magnitude (u along river, v across river)
+                double vel = riverMeshSolver.GetVelocityMagnitude(i, w);
+                float normalizedVelocity = Mathf.Clamp01((float)vel / maxVelocity);
+                colors[vertexIdx] = new Color(normalizedVelocity, 0, 0, 1);
+            }
+        }
+        
+        // Apply updated vertices and colors to mesh
         riverMesh.vertices = riverVertices;
+        riverMesh.colors = colors;
         riverMesh.RecalculateNormals();
         riverMesh.RecalculateBounds();
         
-        // Update the MeshFilter to reflect changes
-        MeshFilter mf = RiverGeometry.GetComponent<MeshFilter>();
-        if (mf != null && mf.mesh == riverMesh)
+        // Update the MeshFilter on the child GameObject to reflect changes
+        GameObject riverMeshObject = RiverGeometry.transform.Find("RiverMesh")?.gameObject;
+        if (riverMeshObject != null)
         {
-            // Mesh is already assigned, just mark as dirty
-            mf.sharedMesh = riverMesh;
+            MeshFilter mf = riverMeshObject.GetComponent<MeshFilter>();
+            if (mf != null)
+            {
+                mf.sharedMesh = riverMesh;
+            }
+            
+            // Ensure material uses velocity heatmap shader and update properties
+            MeshRenderer mr = riverMeshObject.GetComponent<MeshRenderer>();
+            if (mr != null)
+            {
+                Material mat = mr.material;
+                if (mat != null)
+                {
+                    // Ensure shader is correct
+                    Shader velocityHeatmapShader = Shader.Find("Custom/RiverVelocityHeatmap");
+                    if (velocityHeatmapShader != null && mat.shader != velocityHeatmapShader)
+                    {
+                        mat.shader = velocityHeatmapShader;
+                    }
+                    
+                    // Update material's max velocity property for proper heatmap scaling
+                    mat.SetFloat("_MaxVelocity", maxVelocity);
+                    mat.SetFloat("_MinVelocity", 0.0f);
+                }
+            }
         }
     }
 
     // --- Public Getters (Optional, for external visualization/debugging) ---
 
-    public PhysicsSolver GetSolver()
+    public RiverMeshPhysicsSolver GetSolver()
     {
-        return solver;
+        return riverMeshSolver;
     }
-
-    public double[,] GetBedElevation() => h;
-    public double[,] GetWaterDepth() => waterDepth;
-    public double[,] GetVelocityU() => u;
-    public double[,] GetVelocityV() => v;
 }

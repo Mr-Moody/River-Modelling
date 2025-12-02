@@ -451,6 +451,6 @@ class Simulation():
 
 
 if __name__ == "__main__":
-    sim = Simulation(width=30, height=30, cell_size=1, dt=0.01, nu=1e-6, rho=1000.0, g=9.81, sediment_density=2650.0, porosity=0.4, critical_shear=0.05, transport_coefficient=0.1, bank_width=2, bank_erosion_rate=0.3, bank_critical_shear=0.15, bank_height=0.5, terrain_width=5)
+    sim = Simulation(width=15, height=15, cell_size=1, dt=0.01, nu=1e-6, rho=1000.0, g=9.81, sediment_density=2650.0, porosity=0.4, critical_shear=0.05, transport_coefficient=0.1, bank_width=1, bank_erosion_rate=0.3, bank_critical_shear=0.15, bank_height=1, terrain_width=2)
     sim.run(duration=20.0, save_interval=0.1, output_file="simulation_frames.pkl")
 

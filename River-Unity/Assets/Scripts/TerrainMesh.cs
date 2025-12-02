@@ -68,19 +68,17 @@ public class TerrainMesh : MonoBehaviour
         }
         
         // Get bounds from RiverToGrid (same as MeshGrid uses)
+        // These bounds include padding and are in the same coordinate system as the simulation grid
         minX = riverToGrid.MinX;
         maxX = riverToGrid.MaxX;
         minZ = riverToGrid.MinZ;
         maxZ = riverToGrid.MaxZ;
         
-        Debug.Log($"[TerrainMesh] River bounds from RiverToGrid: X[{minX:F2}, {maxX:F2}], Z[{minZ:F2}, {maxZ:F2}]");
+        Debug.Log($"[TerrainMesh] Terrain bounds from RiverToGrid: X[{minX:F2}, {maxX:F2}], Z[{minZ:F2}, {maxZ:F2}]");
         
-        // Add padding around the river (same approach as MeshGrid but with padding)
-        float padding = ((maxX - minX) + (maxZ - minZ)) * 0.2f;
-        minX -= padding;
-        maxX += padding;
-        minZ -= padding;
-        maxZ += padding;
+        // Note: The river mesh vertices are normalized to start at (0,0), but RiverToGrid's MinX/MinZ
+        // include padding and may be negative. The terrain will use these bounds directly to align with
+        // the simulation grid. The river mesh should be positioned to align with these bounds.
         
         // Keep GameObject at origin (same as MeshGrid) - vertices will use minX/minZ offsets directly
         transform.localPosition = Vector3.zero;
@@ -121,7 +119,7 @@ public class TerrainMesh : MonoBehaviour
             for (int x = 0; x < terrainResolutionX; x++)
             {
                 int index = z * terrainResolutionX + x;
-                // Use same offset approach as MeshGrid - vertices in world space
+                // Use same coordinate system as MeshGrid (using RiverToGrid bounds directly)
                 float worldX = minX + x * stepX;
                 float worldZ = minZ + z * stepZ;
                 
@@ -209,7 +207,7 @@ public class TerrainMesh : MonoBehaviour
         }
         
         // Update each terrain vertex based on simulation
-        // Use same offset approach as MeshGrid - vertices are in world space relative to origin
+        // Use same coordinate system as MeshGrid (using RiverToGrid bounds directly)
         float stepX = (maxX - minX) / (terrainResolutionX - 1);
         float stepZ = (maxZ - minZ) / (terrainResolutionZ - 1);
         
@@ -218,7 +216,7 @@ public class TerrainMesh : MonoBehaviour
             for (int x = 0; x < terrainResolutionX; x++)
             {
                 int index = z * terrainResolutionX + x;
-                // World space coordinates (same as MeshGrid uses minXOffset/minZOffset)
+                // World space coordinates (same as MeshGrid uses)
                 float worldX = minX + x * stepX;
                 float worldZ = minZ + z * stepZ;
                 
@@ -280,7 +278,7 @@ public class TerrainMesh : MonoBehaviour
                     finalHeight = Mathf.Lerp(finalHeight, neighborAvg, 1f / (1f + terrainSmoothing));
                 }
                 
-                // Store in world space coordinates (same as MeshGrid - using offsets directly)
+                // Store in world space coordinates (same as MeshGrid)
                 terrainVertices[index] = new Vector3(worldX, finalHeight, worldZ);
             }
         }

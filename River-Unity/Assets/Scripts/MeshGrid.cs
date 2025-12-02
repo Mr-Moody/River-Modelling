@@ -45,20 +45,24 @@ public class MeshGrid : MonoBehaviour
 
     void OnEnable()
     {
+        // NOTE: MeshGrid is deprecated - physics now runs directly on river mesh via RiverMeshPhysicsSolver
+        // No longer subscribing to grid events since the grid-based system is not used
+        
         // Early return if not in play mode to avoid editor issues
         if (!Application.isPlaying)
         {
             return;
         }
 
-        // Subscribe to grid initialization event
-        RiverToGrid.OnGridInitialized += HandleGridInitialized;
+        // Disabled - no longer needed since we use RiverMeshPhysicsSolver
+        // RiverToGrid.OnGridInitialized += HandleGridInitialized;
     }
 
     void OnDisable()
     {
+        // NOTE: MeshGrid is deprecated - no longer subscribing to events
         // Unsubscribe from events
-        RiverToGrid.OnGridInitialized -= HandleGridInitialized;
+        // RiverToGrid.OnGridInitialized -= HandleGridInitialized;
     }
 
     void Awake()
@@ -69,18 +73,26 @@ public class MeshGrid : MonoBehaviour
             return;
         }
 
-        // Try to get RiverToGrid reference if not assigned
-        if (riverToGrid == null)
-        {
-            riverToGrid = GetComponent<RiverToGrid>();
-        }
+        // NOTE: MeshGrid is deprecated - physics now runs directly on river mesh via RiverMeshPhysicsSolver
+        // This component is kept for backward compatibility but no longer generates the simulation grid mesh
+        // The SimulationGridMesh is no longer needed since we use the river geometry mesh directly
         
-        // Only generate default mesh if not initialized via events
-        // Events will handle initialization when grid is ready
-        if (riverToGrid == null || !riverToGrid.isInitialized)
-        {
-            generateMesh();
-        }
+        // Disable mesh generation - physics now uses RiverMeshPhysicsSolver on the river geometry
+        return;
+        
+        // OLD CODE (disabled):
+        // Try to get RiverToGrid reference if not assigned
+        // if (riverToGrid == null)
+        // {
+        //     riverToGrid = GetComponent<RiverToGrid>();
+        // }
+        // 
+        // // Only generate default mesh if not initialized via events
+        // // Events will handle initialization when grid is ready
+        // if (riverToGrid == null || !riverToGrid.isInitialized)
+        // {
+        //     generateMesh();
+        // }
     }
 
     /// <summary>
@@ -102,28 +114,35 @@ public class MeshGrid : MonoBehaviour
 
     void OnValidate()
     {
+        // NOTE: MeshGrid is deprecated - physics now runs directly on river mesh via RiverMeshPhysicsSolver
+        // Disabled mesh generation to prevent SimulationGridMesh from being created
+        
         // Skip entirely if already generating or not in play mode
         if (isGeneratingMesh || !Application.isPlaying)
         {
             return;
         }
 
-        // Ensure values are at least 1 (defensive for script changes)
-        if (physicalHeight < 1f) physicalHeight = 1f;
-        if (physicalWidth < 1f) physicalWidth = 1f;
-        if (numCellsX < 1) numCellsX = 1;
-        if (numCellsY < 1) numCellsY = 1;
-
-        // Recreate mesh when values change in the inspector
-        // We do NOT use the min/max offsets here, as OnValidate should reflect
-        // the Inspector settings primarily.
-        minXOffset = 0f;
-        minZOffset = 0f;
+        // Disabled - no longer generating mesh since we use RiverMeshPhysicsSolver
+        return;
         
-        // Defer mesh generation to avoid SendMessage errors during OnValidate
-        // Setting sharedMesh during OnValidate causes SendMessage errors
-        // Use a coroutine to defer mesh generation until after OnValidate completes
-        StartCoroutine(DeferredMeshGeneration());
+        // OLD CODE (disabled):
+        // Ensure values are at least 1 (defensive for script changes)
+        // if (physicalHeight < 1f) physicalHeight = 1f;
+        // if (physicalWidth < 1f) physicalWidth = 1f;
+        // if (numCellsX < 1) numCellsX = 1;
+        // if (numCellsY < 1) numCellsY = 1;
+        //
+        // // Recreate mesh when values change in the inspector
+        // // We do NOT use the min/max offsets here, as OnValidate should reflect
+        // // the Inspector settings primarily.
+        // minXOffset = 0f;
+        // minZOffset = 0f;
+        // 
+        // // Defer mesh generation to avoid SendMessage errors during OnValidate
+        // // Setting sharedMesh during OnValidate causes SendMessage errors
+        // // Use a coroutine to defer mesh generation until after OnValidate completes
+        // StartCoroutine(DeferredMeshGeneration());
     }
 
     private System.Collections.IEnumerator DeferredMeshGeneration()

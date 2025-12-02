@@ -246,15 +246,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   RiverGeometry: {fileID: 936920789}
-  ShowSimulationGrid: 0
   UpdateRiverGeometry: 1
   RiverGeometryElevationScale: 1
   EnableTerrain: 0
   RunSimulation: 0
-  UseRiverMeshPhysics: 0
-  GridWidth: 100
-  GridHeight: 50
-  CellSize: 1
   TimeStep: 0.01
   IterationsPerFrame: 10
   InitialWaterDepth: 0.5
@@ -319,7 +314,7 @@ MonoBehaviour:
   defaultElevationY: 1
   simplificationFactor: 1
   useGridMesh: 1
-  widthResolution: 4
+  widthResolution: 6
 --- !u!23 &936920791
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -400,7 +395,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 883312f982897be448df08239a14f499, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  cellSize: 0.7
+  cellSize: 0.9
   geometryLoader: {fileID: 936920790}
 --- !u!114 &936920795
 MonoBehaviour:

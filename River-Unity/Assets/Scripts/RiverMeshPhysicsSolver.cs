@@ -708,6 +708,13 @@ public class RiverMeshPhysicsSolver
                     dqs_w_dw = (qs_w_bc[i, widthResolution - 1] - qs_w_bc[i, widthResolution - 2]) / dw_curr;
                 
                 div_qs[i, w] = dqs_s_ds + dqs_w_dw;
+                
+                // Explicitly set divergence to zero for BANK cells
+                // Banks should not be affected by sediment transport (only horizontal bank migration, not vertical erosion)
+                if (cellType[i, w] != RiverCellType.FLUID)
+                {
+                    div_qs[i, w] = 0.0;
+                }
             }
         }
         
@@ -724,12 +731,16 @@ public class RiverMeshPhysicsSolver
         {
             for (int w = 0; w < widthResolution; w++)
             {
-                dh_dt[i, w] = -porosityFactor * div_qs[i, w];
-                
-                // Add bank erosion rate (only where applicable)
-                if (cellType[i, w] != RiverCellType.FLUID)
+                // Only apply Exner equation to FLUID cells
+                if (cellType[i, w] == RiverCellType.FLUID)
                 {
-                    dh_dt[i, w] -= porosityFactor * bank_erosion_rate[i, w];
+                    dh_dt[i, w] = -porosityFactor * div_qs[i, w];
+                }
+                else
+                {
+                    // BANK cells: prevent vertical erosion (banks should erode horizontally, not vertically)
+                    // Keep bank elevation stable or maintain minimum height relative to adjacent fluid
+                    dh_dt[i, w] = 0.0;
                 }
                 
                 // Update bed elevation and apply stability constraint
@@ -744,7 +755,196 @@ public class RiverMeshPhysicsSolver
             }
         }
         
+        // Apply boundary conditions: maintain bank elevations and prevent edge falling
+        ApplyBedElevationBoundaryConditions(h_new);
+        
+        // Apply spatial smoothing to reduce numerical noise
+        // Conservative smoothing to prevent mesh peaking while preserving physical behavior
+        h_new = ApplySpatialSmoothing(h_new, smoothingFactor: 0.05);
+        
         return (dh_dt, h_new);
+    }
+    
+    /// <summary>
+    /// Applies boundary conditions to bed elevation to prevent edges from falling.
+    /// Banks are constrained to maintain minimum height relative to adjacent fluid cells.
+    /// </summary>
+    private void ApplyBedElevationBoundaryConditions(double[,] h_new)
+    {
+        // For BANK cells, maintain elevation at or above adjacent fluid cells
+        // This prevents bank edges from eroding downward
+        double bankHeightBuffer = 0.05; // Minimum height difference between bank and adjacent fluid
+        
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                if (cellType[i, w] == RiverCellType.BANK)
+                {
+                    // Find maximum elevation of adjacent fluid cells
+                    double maxAdjacentFluidElevation = double.MinValue;
+                    bool hasAdjacentFluid = false;
+                    
+                    // Check adjacent cells along river (s-direction)
+                    if (i > 0 && cellType[i - 1, w] == RiverCellType.FLUID)
+                    {
+                        maxAdjacentFluidElevation = Math.Max(maxAdjacentFluidElevation, h_new[i - 1, w]);
+                        hasAdjacentFluid = true;
+                    }
+                    if (i < numCrossSections - 1 && cellType[i + 1, w] == RiverCellType.FLUID)
+                    {
+                        maxAdjacentFluidElevation = Math.Max(maxAdjacentFluidElevation, h_new[i + 1, w]);
+                        hasAdjacentFluid = true;
+                    }
+                    
+                    // Check adjacent cells across river (w-direction)
+                    if (w > 0 && cellType[i, w - 1] == RiverCellType.FLUID)
+                    {
+                        maxAdjacentFluidElevation = Math.Max(maxAdjacentFluidElevation, h_new[i, w - 1]);
+                        hasAdjacentFluid = true;
+                    }
+                    if (w < widthResolution - 1 && cellType[i, w + 1] == RiverCellType.FLUID)
+                    {
+                        maxAdjacentFluidElevation = Math.Max(maxAdjacentFluidElevation, h_new[i, w + 1]);
+                        hasAdjacentFluid = true;
+                    }
+                    
+                    // Constrain bank elevation to be at least buffer height above adjacent fluid
+                    if (hasAdjacentFluid)
+                    {
+                        double minBankElevation = maxAdjacentFluidElevation + bankHeightBuffer;
+                        h_new[i, w] = Math.Max(h_new[i, w], minBankElevation);
+                    }
+                    
+                    // Alternative: Keep bank elevation stable (preserve original height)
+                    // This prevents any vertical erosion on banks
+                    // h_new[i, w] = h[i, w];
+                }
+            }
+        }
+        
+        // Apply boundary conditions at river ends to prevent edge instability
+        // Upstream boundary: maintain initial elevation or smooth with adjacent
+        for (int w = 0; w < widthResolution; w++)
+        {
+            if (numCrossSections > 1 && cellType[0, w] == RiverCellType.FLUID)
+            {
+                // Smooth with downstream neighbor
+                h_new[0, w] = 0.7 * h_new[0, w] + 0.3 * h_new[1, w];
+            }
+        }
+        
+        // Downstream boundary: smooth with upstream neighbor
+        for (int w = 0; w < widthResolution; w++)
+        {
+            if (numCrossSections > 1 && cellType[numCrossSections - 1, w] == RiverCellType.FLUID)
+            {
+                h_new[numCrossSections - 1, w] = 0.7 * h_new[numCrossSections - 1, w] + 0.3 * h_new[numCrossSections - 2, w];
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Applies Laplacian smoothing to reduce numerical noise in bed elevation.
+    /// This helps prevent mesh "peaking" and instability.
+    /// Uses a conservative smoothing approach that only reduces sharp variations.
+    /// </summary>
+    private double[,] ApplySpatialSmoothing(double[,] h_data, double smoothingFactor = 0.1)
+    {
+        double[,] h_smoothed = (double[,])h_data.Clone();
+        
+        // Apply Laplacian smoothing: h_new = h_old + smoothingFactor * Laplacian(h_old)
+        // This diffuses sharp peaks and valleys
+        for (int i = 1; i < numCrossSections - 1; i++)
+        {
+            for (int w = 1; w < widthResolution - 1; w++)
+            {
+                double ds_curr = Math.Max(ds[i], 1e-6); // Avoid division by zero
+                double dw_curr = Math.Max(dw[i], 1e-6);
+                
+                // Smooth FLUID cells
+                if (cellType[i, w] == RiverCellType.FLUID)
+                {
+                    // Compute Laplacian using only FLUID neighbors
+                    double laplacian_s = 0.0;
+                    double laplacian_w = 0.0;
+                    
+                    // Along-river direction (s)
+                    if (cellType[i + 1, w] == RiverCellType.FLUID && cellType[i - 1, w] == RiverCellType.FLUID)
+                    {
+                        laplacian_s = (h_data[i + 1, w] - 2 * h_data[i, w] + h_data[i - 1, w]) / (ds_curr * ds_curr);
+                    }
+                    
+                    // Across-river direction (w)
+                    if (cellType[i, w + 1] == RiverCellType.FLUID && cellType[i, w - 1] == RiverCellType.FLUID)
+                    {
+                        laplacian_w = (h_data[i, w + 1] - 2 * h_data[i, w] + h_data[i, w - 1]) / (dw_curr * dw_curr);
+                    }
+                    
+                    double laplacian = laplacian_s + laplacian_w;
+                    
+                    // Apply conservative smoothing (only reduce peaks, don't amplify)
+                    double smoothed_value = h_data[i, w] + smoothingFactor * laplacian;
+                    
+                    // Limit smoothing to prevent unrealistic values
+                    double max_change = 0.01; // Maximum change per smoothing step
+                    smoothed_value = Math.Max(h_data[i, w] - max_change, Math.Min(h_data[i, w] + max_change, smoothed_value));
+                    
+                    h_smoothed[i, w] = smoothed_value;
+                }
+                // Smooth BANK cells at boundaries to prevent sharp edges
+                else if (cellType[i, w] == RiverCellType.BANK)
+                {
+                    // Apply light smoothing to bank cells to prevent sharp drops
+                    // Average with adjacent cells (weighted by cell type)
+                    double weightedSum = h_data[i, w];
+                    double totalWeight = 1.0;
+                    
+                    // Check neighbors and include them if they exist
+                    if (i > 0)
+                    {
+                        weightedSum += h_data[i - 1, w];
+                        totalWeight += 1.0;
+                    }
+                    if (i < numCrossSections - 1)
+                    {
+                        weightedSum += h_data[i + 1, w];
+                        totalWeight += 1.0;
+                    }
+                    if (w > 0)
+                    {
+                        weightedSum += h_data[i, w - 1];
+                        totalWeight += 1.0;
+                    }
+                    if (w < widthResolution - 1)
+                    {
+                        weightedSum += h_data[i, w + 1];
+                        totalWeight += 1.0;
+                    }
+                    
+                    // Apply very conservative smoothing to banks (only 10% of difference)
+                    double neighborAvg = weightedSum / totalWeight;
+                    double smoothed_value = 0.9 * h_data[i, w] + 0.1 * neighborAvg;
+                    
+                    // Ensure bank doesn't drop below adjacent fluid cells
+                    double minAdjacentFluid = h_data[i, w];
+                    if (i > 0 && cellType[i - 1, w] == RiverCellType.FLUID)
+                        minAdjacentFluid = Math.Min(minAdjacentFluid, h_data[i - 1, w]);
+                    if (i < numCrossSections - 1 && cellType[i + 1, w] == RiverCellType.FLUID)
+                        minAdjacentFluid = Math.Min(minAdjacentFluid, h_data[i + 1, w]);
+                    if (w > 0 && cellType[i, w - 1] == RiverCellType.FLUID)
+                        minAdjacentFluid = Math.Min(minAdjacentFluid, h_data[i, w - 1]);
+                    if (w < widthResolution - 1 && cellType[i, w + 1] == RiverCellType.FLUID)
+                        minAdjacentFluid = Math.Min(minAdjacentFluid, h_data[i, w + 1]);
+                    
+                    smoothed_value = Math.Max(smoothed_value, minAdjacentFluid + 0.05); // Keep bank above fluid
+                    
+                    h_smoothed[i, w] = smoothed_value;
+                }
+            }
+        }
+        
+        return h_smoothed;
     }
 }
 

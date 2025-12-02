@@ -32,6 +32,14 @@ public class CSVGeometryLoader : MonoBehaviour
     [Range(1, 100)]
     public int simplificationFactor = 1;
 
+    [Header("Grid Remeshing")]
+    [Tooltip("Enable grid remeshing to convert unstructured river geometry into a structured grid mesh for simulation updates.")]
+    public bool useGridMesh = false;
+    
+    [Tooltip("Number of points across the river width (width resolution). Higher values = more detail but more vertices.")]
+    [Range(2, 50)]
+    public int widthResolution = 10;
+
     // --- CSV Column Headers (MUST MATCH YOUR FILE) ---
     private const string ORDER_COL = "order";
     private const string LEFT_X_COL = "left_bank_x";
@@ -59,25 +67,17 @@ public class CSVGeometryLoader : MonoBehaviour
 
     void Start()
     {
-        Debug.Log("[CSVGeometryLoader] Start() called - Beginning CSV loading...");
-        
         if (csvFile == null)
         {
             Debug.LogError("CSV File asset is not assigned.");
             return;
         }
 
-        Debug.Log($"[CSVGeometryLoader] CSV file found: {csvFile.name}, starting mesh generation...");
         GenerateMeshFromCsv();
 
-        // Debug log confirming data load, NOT visualization success.
-        if (mesh != null)
+        if (mesh == null)
         {
-            Debug.Log($"[CSVGeometryLoader] ✓ Mesh generation complete: {mesh.vertexCount} vertices generated. Firing OnMeshLoaded event...");
-        }
-        else
-        {
-            Debug.LogError("[CSVGeometryLoader] ✗ Mesh generation failed - mesh is null!");
+            Debug.LogError("[CSVGeometryLoader] Mesh generation failed - mesh is null!");
         }
     }
 
@@ -173,7 +173,6 @@ public class CSVGeometryLoader : MonoBehaviour
         {
             int originalCount = rawPoints.Count;
             rawPoints = rawPoints.Where((p, index) => index % simplificationFactor == 0).ToList();
-            Debug.Log($"[CSVGeometryLoader] Mesh simplified: {originalCount} -> {rawPoints.Count} cross-sections (factor: {simplificationFactor})");
         }
 
         // 2. Calculate bounds BEFORE normalization to find the minimum
@@ -185,9 +184,6 @@ public class CSVGeometryLoader : MonoBehaviour
         // Use the minimum as the offset to ensure mesh starts at origin
         float offsetX = minX;
         float offsetZ = minZ;
-        
-        Debug.Log($"[CSVGeometryLoader] Raw data bounds: X[{minX:F2}, {maxX:F2}], Z[{minZ:F2}, {maxZ:F2}]");
-        Debug.Log($"[CSVGeometryLoader] Using offset: ({offsetX:F2}, {offsetZ:F2}), scaleFactor: {scaleFactor}");
 
         // 3. Prepare Final Vertex List
         List<Vector3> vertices = new List<Vector3>();
@@ -204,16 +200,6 @@ public class CSVGeometryLoader : MonoBehaviour
             float localRX = (p.RX - offsetX) * scaleFactor;
             float localRZ = (p.RY - offsetZ) * scaleFactor;
             vertices.Add(new Vector3(localRX, defaultElevationY, localRZ));
-        }
-        
-        // Verify normalization worked
-        if (vertices.Count > 0)
-        {
-            float finalMinX = vertices.Min(v => v.x);
-            float finalMaxX = vertices.Max(v => v.x);
-            float finalMinZ = vertices.Min(v => v.z);
-            float finalMaxZ = vertices.Max(v => v.z);
-            Debug.Log($"[CSVGeometryLoader] Normalized mesh bounds: X[{finalMinX:F2}, {finalMaxX:F2}], Z[{finalMinZ:F2}, {finalMaxZ:F2}]");
         }
 
         // 4. Generate Mesh (Data container only)
@@ -236,27 +222,23 @@ public class CSVGeometryLoader : MonoBehaviour
         }
         mesh.uv = uvs;
 
-        Debug.Log($"[CSVGeometryLoader] Recalculating normals and bounds for {vertices.Count} vertices...");
-        Debug.Log($"[CSVGeometryLoader] Mesh bounds before: {mesh.bounds}");
-        
         // Finalize Mesh Data (Normals/Bounds are still helpful for downstream code like RiverToGrid)
         mesh.RecalculateNormals();
         mesh.RecalculateBounds();
         
-        Debug.Log($"[CSVGeometryLoader] Mesh bounds after: {mesh.bounds}");
-        Debug.Log($"[CSVGeometryLoader] Mesh center: {mesh.bounds.center}, size: {mesh.bounds.size}");
-
-        Debug.Log("[CSVGeometryLoader] Mesh finalized. Setting up visualization...");
+        // Remesh into grid structure if enabled
+        if (useGridMesh)
+        {
+            RemeshToGrid();
+        }
         
         // Setup MeshFilter and MeshRenderer to display the river geometry
         SetupMeshRenderer();
 
-        Debug.Log("[CSVGeometryLoader] Mesh finalized. Invoking OnMeshLoaded event...");
-        
         // Fire event to notify other components that mesh is ready
         OnMeshLoaded?.Invoke(mesh);
         
-        Debug.Log("[CSVGeometryLoader] OnMeshLoaded event fired.");
+        Debug.Log($"[CSVGeometryLoader] Mesh loaded: {mesh.vertexCount} vertices, Bounds: {mesh.bounds.size.x:F2}x{mesh.bounds.size.z:F2}");
     }
 
     /// <summary>
@@ -264,14 +246,11 @@ public class CSVGeometryLoader : MonoBehaviour
     /// </summary>
     private void SetupMeshRenderer()
     {
-        Debug.Log("[CSVGeometryLoader] Setting up MeshFilter and MeshRenderer...");
-        
         // Get or add MeshFilter component
         MeshFilter meshFilter = GetComponent<MeshFilter>();
         if (meshFilter == null)
         {
             meshFilter = gameObject.AddComponent<MeshFilter>();
-            Debug.Log("[CSVGeometryLoader] Created MeshFilter component");
         }
         
         if (mesh == null)
@@ -281,16 +260,12 @@ public class CSVGeometryLoader : MonoBehaviour
         }
         
         meshFilter.mesh = mesh;
-        Debug.Log($"[CSVGeometryLoader] ✓ Mesh assigned to MeshFilter: {mesh.vertexCount} vertices, {mesh.triangles.Length/3} triangles");
-        Debug.Log($"[CSVGeometryLoader] Mesh bounds: center={mesh.bounds.center}, size={mesh.bounds.size}, min={mesh.bounds.min}, max={mesh.bounds.max}");
-        Debug.Log($"[CSVGeometryLoader] GameObject position: {transform.position}, scale: {transform.localScale}");
 
         // Get or add MeshRenderer component
         MeshRenderer meshRenderer = GetComponent<MeshRenderer>();
         if (meshRenderer == null)
         {
             meshRenderer = gameObject.AddComponent<MeshRenderer>();
-            Debug.Log("[CSVGeometryLoader] Created MeshRenderer component");
         }
 
         // Apply RiverMaterial (use assigned material or try to load from Resources)
@@ -310,7 +285,6 @@ public class CSVGeometryLoader : MonoBehaviour
         if (materialToUse != null)
         {
             meshRenderer.material = materialToUse;
-            Debug.Log("[CSVGeometryLoader] ✓ RiverMaterial applied successfully.");
         }
         else
         {
@@ -323,7 +297,7 @@ public class CSVGeometryLoader : MonoBehaviour
                 defaultMat.SetFloat("_Metallic", 0.3f);
                 defaultMat.SetFloat("_Glossiness", 0.5f);
                 meshRenderer.material = defaultMat;
-                Debug.LogWarning($"[CSVGeometryLoader] RiverMaterial not found. Using default RED material. River geometry is at Y={defaultElevationY}. Please assign Materials/RiverMaterial in the Inspector.");
+                Debug.LogWarning($"[CSVGeometryLoader] RiverMaterial not found. Using default material. Please assign Materials/RiverMaterial in the Inspector.");
             }
             else
             {
@@ -340,38 +314,120 @@ public class CSVGeometryLoader : MonoBehaviour
         {
             meshRenderer.material.renderQueue = 3000; // Render after opaque geometry
         }
-        
-        Debug.Log($"[CSVGeometryLoader] ✓ MeshRenderer enabled. River geometry should be visible at Y={defaultElevationY}");
-        Debug.Log($"[CSVGeometryLoader] River geometry mesh: {mesh.vertexCount} vertices forming a sinuous strip. Mesh size: {mesh.bounds.size.x:F3} x {mesh.bounds.size.z:F3} units.");
-        Debug.Log($"[CSVGeometryLoader] TIP: If the river shape is hard to see, try increasing 'Scale Factor' in the Inspector (currently {scaleFactor}).");
     }
     
-    void OnDrawGizmosSelected()
+
+    /// <summary>
+    /// Remeshes the unstructured river geometry into a structured grid mesh.
+    /// The grid follows the river's path along its length and has configurable width resolution.
+    /// This allows the simulation to update the physical geometry more easily.
+    /// 
+    /// Grid structure:
+    /// - Length dimension: follows the river's cross-sections (one row per cross-section)
+    /// - Width dimension: interpolated points across the river width (configurable via widthResolution)
+    /// - Vertices are arranged in rows: each row is a cross-section with widthResolution points
+    /// - Vertex index calculation: vertexIndex = rowIndex * widthResolution + columnIndex
+    /// </summary>
+    public void RemeshToGrid()
     {
-        // Only draw gizmos when selected to avoid performance issues
-        if (mesh != null && mesh.vertices != null && mesh.vertices.Length > 0)
+        if (mesh == null || mesh.vertices == null || mesh.vertices.Length < 4)
         {
-            Gizmos.color = Color.yellow;
-            Gizmos.matrix = transform.localToWorldMatrix;
+            Debug.LogError("[CSVGeometryLoader] Cannot remesh - mesh is null or invalid!");
+            return;
+        }
+
+        Vector3[] originalVertices = mesh.vertices;
+        int numCrossSections = originalVertices.Length / 2; // Each cross-section has 2 vertices (left and right bank)
+        
+        if (numCrossSections < 2)
+        {
+            Debug.LogError("[CSVGeometryLoader] Cannot remesh - need at least 2 cross-sections!");
+            return;
+        }
+
+        // Extract cross-sections from original vertices
+        List<Vector3> leftBank = new List<Vector3>();
+        List<Vector3> rightBank = new List<Vector3>();
+        
+        for (int i = 0; i < originalVertices.Length; i += 2)
+        {
+            leftBank.Add(originalVertices[i]);      // Left bank vertex
+            rightBank.Add(originalVertices[i + 1]); // Right bank vertex
+        }
+
+        // Create grid vertices: numCrossSections along length, widthResolution across width
+        int lengthResolution = numCrossSections;
+        List<Vector3> gridVertices = new List<Vector3>();
+        List<Vector2> gridUVs = new List<Vector2>();
+
+        for (int i = 0; i < lengthResolution; i++)
+        {
+            Vector3 left = leftBank[i];
+            Vector3 right = rightBank[i];
             
-            // Draw the mesh bounds (lightweight)
-            Gizmos.DrawWireCube(mesh.bounds.center, mesh.bounds.size);
-            
-            // Draw a simplified line along the left bank to show the river path
-            // Only draw every Nth vertex to prevent freezing with large meshes (41k vertices)
-            if (mesh.vertices.Length >= 4)
+            // Interpolate across the width
+            for (int w = 0; w < widthResolution; w++)
             {
-                Gizmos.color = Color.cyan;
-                // Only draw ~200 lines max to show the shape without freezing
-                int step = Mathf.Max(2, (mesh.vertices.Length / 2) / 200); // Divide by 2 because we only want left bank
-                for (int i = 0; i < mesh.vertices.Length - step * 2; i += step * 2)
+                Vector3 vertex;
+                
+                // Ensure first and last points are exactly at bank positions for perfect alignment
+                if (w == 0)
                 {
-                    Vector3 v1 = transform.TransformPoint(mesh.vertices[i]);
-                    Vector3 v2 = transform.TransformPoint(mesh.vertices[i + step * 2]);
-                    Gizmos.DrawLine(v1, v2);
+                    vertex = left; // Exact left bank position
                 }
+                else if (w == widthResolution - 1)
+                {
+                    vertex = right; // Exact right bank position
+                }
+                else
+                {
+                    float t = (float)w / (widthResolution - 1); // 0 to 1 across width
+                    vertex = Vector3.Lerp(left, right, t);
+                }
+                
+                gridVertices.Add(vertex);
+                
+                // UV coordinates: U along length, V across width
+                float u = lengthResolution > 1 ? (float)i / (lengthResolution - 1) : 0f;
+                float v = widthResolution > 1 ? (float)w / (widthResolution - 1) : 0f;
+                gridUVs.Add(new Vector2(u, v));
             }
         }
+
+        // Generate triangles for grid mesh
+        // Note: Only connect adjacent cross-sections, don't connect last to first
+        List<int> triangles = new List<int>();
+        
+        for (int i = 0; i < lengthResolution - 1; i++)
+        {
+            for (int w = 0; w < widthResolution - 1; w++)
+            {
+                int current = i * widthResolution + w;
+                int next = (i + 1) * widthResolution + w;
+                int currentRight = i * widthResolution + (w + 1);
+                int nextRight = (i + 1) * widthResolution + (w + 1);
+
+                // Triangle 1: Reversed winding order to face upwards
+                triangles.Add(current);
+                triangles.Add(currentRight);
+                triangles.Add(next);
+
+                // Triangle 2: Reversed winding order to face upwards
+                triangles.Add(next);
+                triangles.Add(currentRight);
+                triangles.Add(nextRight);
+            }
+        }
+
+        // Create new grid mesh
+        mesh.Clear();
+        mesh.vertices = gridVertices.ToArray();
+        mesh.triangles = triangles.ToArray();
+        mesh.uv = gridUVs.ToArray();
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+
+        Debug.Log($"[CSVGeometryLoader] Remeshed to grid: {gridVertices.Count} vertices ({lengthResolution}x{widthResolution} grid), {triangles.Count / 3} triangles");
     }
 
     /// <summary>

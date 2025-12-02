@@ -51,12 +51,8 @@ public class MeshGrid : MonoBehaviour
             return;
         }
 
-        Debug.Log("[MeshGrid] OnEnable() called - Subscribing to events");
-        
         // Subscribe to grid initialization event
         RiverToGrid.OnGridInitialized += HandleGridInitialized;
-        
-        Debug.Log("[MeshGrid] ✓ Event subscription complete");
     }
 
     void OnDisable()
@@ -73,26 +69,17 @@ public class MeshGrid : MonoBehaviour
             return;
         }
 
-        Debug.Log("[MeshGrid] Awake() called");
-        
         // Try to get RiverToGrid reference if not assigned
         if (riverToGrid == null)
         {
             riverToGrid = GetComponent<RiverToGrid>();
-            Debug.Log($"[MeshGrid] RiverToGrid reference: {(riverToGrid != null ? "found" : "not found")}");
         }
         
         // Only generate default mesh if not initialized via events
         // Events will handle initialization when grid is ready
         if (riverToGrid == null || !riverToGrid.isInitialized)
         {
-            Debug.Log("[MeshGrid] Generating default mesh in Awake()...");
             generateMesh();
-            Debug.Log("[MeshGrid] ✓ Default mesh generation complete");
-        }
-        else
-        {
-            Debug.Log("[MeshGrid] Skipping default mesh - will be initialized via events");
         }
     }
 
@@ -101,8 +88,6 @@ public class MeshGrid : MonoBehaviour
     /// </summary>
     private void HandleGridInitialized(int gridWidth, int gridHeight, float minX, float minZ, float maxX, float maxZ)
     {
-        Debug.Log($"[MeshGrid] HandleGridInitialized called - Grid: {gridWidth}x{gridHeight}, Bounds: X[{minX:F2}, {maxX:F2}], Z[{minZ:F2}, {maxZ:F2}]");
-        
         if (riverToGrid == null)
         {
             Debug.LogError("MeshGrid: RiverToGrid reference is missing!");
@@ -110,9 +95,7 @@ public class MeshGrid : MonoBehaviour
         }
 
         float cellSize = riverToGrid.GetCellSize();
-        Debug.Log($"[MeshGrid] Starting mesh initialization with cellSize: {cellSize}");
         Initialize(gridWidth, gridHeight, cellSize, minX, minZ);
-        Debug.Log("[MeshGrid] ✓ Mesh initialization complete");
     }
 
     private bool isGeneratingMesh = false; // Guard to prevent re-entry
@@ -165,8 +148,6 @@ public class MeshGrid : MonoBehaviour
     /// <param name="minZ">The minimum Z extent (offset) of the river geometry.</param>
     public void Initialize(int gridWidth, int gridHeight, float cellSize, float minX, float minZ)
     {
-        Debug.Log($"[MeshGrid] Initialize() called - Grid: {gridWidth}x{gridHeight}, CellSize: {cellSize}");
-        
         // The simulation's grid dimensions (cells)
         numCellsX = gridWidth;
         numCellsY = gridHeight;
@@ -179,9 +160,8 @@ public class MeshGrid : MonoBehaviour
         this.minXOffset = minX;
         this.minZOffset = minZ;
 
-        Debug.Log($"[MeshGrid] Generating mesh: {numCellsX}x{numCellsY} cells, Physical size: {physicalWidth:F2}x{physicalHeight:F2}");
         generateMesh();
-        Debug.Log("[MeshGrid] ✓ Mesh generation complete");
+        Debug.Log($"[MeshGrid] Mesh initialized: {numCellsX}x{numCellsY} cells, Physical size: {physicalWidth:F2}x{physicalHeight:F2}");
     }
 
     // --- Public Update Method ---
@@ -248,26 +228,58 @@ public class MeshGrid : MonoBehaviour
                 int i = z * vertsX + x;
 
                 // 1. Update Bed Elevation (Y-coordinate)
+                // Apply a visual scale factor to make changes more visible
+                float elevationScale = 1.0f; // Can be adjusted in inspector if needed
+                float baseElevation = 0.0f;
+                
                 if (isVertexCentered)
                 {
                     // Data is vertex-centered, use directly
-                    vertices[i].y = (float)h[x, z];
+                    vertices[i].y = baseElevation + (float)h[x, z] * elevationScale;
                 }
                 else
                 {
                     // Data is cell-centered, clamp to valid range
                     int hX = Mathf.Min(x, numCellsX - 1);
                     int hZ = Mathf.Min(z, numCellsY - 1);
-                    vertices[i].y = (float)h[hX, hZ];
+                    vertices[i].y = baseElevation + (float)h[hX, hZ] * elevationScale;
+                }
+                
+                // Also add water depth to elevation for visual effect
+                if (isVertexCentered)
+                {
+                    int wX = x;
+                    int wZ = z;
+                    if (wX < waterDepth.GetLength(0) && wZ < waterDepth.GetLength(1))
+                    {
+                        vertices[i].y += (float)waterDepth[wX, wZ] * 0.1f; // Small water depth visualization
+                    }
+                }
+                else
+                {
+                    int wX = Mathf.Min(x, numCellsX - 1);
+                    int wZ = Mathf.Min(z, numCellsY - 1);
+                    if (wX < waterDepth.GetLength(0) && wZ < waterDepth.GetLength(1))
+                    {
+                        vertices[i].y += (float)waterDepth[wX, wZ] * 0.1f; // Small water depth visualization
+                    }
                 }
 
-                // 2. Color based on Flow Data (Using indices x and z for simplicity)
-
-                // Clamp indices for boundary cells if the data arrays (u, v, waterDepth, cellType)
-                // are sized numCellsX x numCellsY (cell-centered data) and not vertsX x vertsZ (vertex-centered data).
-                // Assuming data arrays are cell-centered, we must clamp or handle boundary vertices.
-                int dataX = Mathf.Min(x, numCellsX - 1);
-                int dataZ = Mathf.Min(z, numCellsY - 1);
+                // 2. Color based on Flow Data
+                // The solver arrays are vertex-centered (nx x ny = vertsX x vertsZ)
+                // So we can use x and z directly if isVertexCentered, otherwise clamp
+                int dataX, dataZ;
+                if (isVertexCentered)
+                {
+                    dataX = x;
+                    dataZ = z;
+                }
+                else
+                {
+                    // Data is cell-centered, clamp to valid range
+                    dataX = Mathf.Min(x, numCellsX - 1);
+                    dataZ = Mathf.Min(z, numCellsY - 1);
+                }
 
                 float u_val = (float)u[dataX, dataZ];
                 float v_val = (float)v[dataX, dataZ];
@@ -327,14 +339,10 @@ public class MeshGrid : MonoBehaviour
 
         try
         {
-            Debug.Log($"[MeshGrid] generateMesh() called - Grid: {numCellsX}x{numCellsY}");
-            
             // Clamp resolution (extra safety)
             if (numCellsX < 1) numCellsX = 1;
             if (numCellsY < 1) numCellsY = 1;
 
-        Debug.Log("[MeshGrid] Step 1: Getting/creating MeshFilter on child GameObject...");
-        
         // 1. Create or get a child GameObject for the simulation grid mesh
         // This prevents conflicts with the river geometry mesh on the parent
         GameObject gridMeshObject = null;
@@ -350,23 +358,18 @@ public class MeshGrid : MonoBehaviour
             gridMeshObject.transform.localPosition = Vector3.zero;
             gridMeshObject.transform.localRotation = Quaternion.identity;
             gridMeshObject.transform.localScale = Vector3.one;
-            Debug.Log("[MeshGrid] Created child GameObject for simulation grid mesh");
         }
         
         var mf = gridMeshObject.GetComponent<MeshFilter>();
         if (mf == null) 
         {
             mf = gridMeshObject.AddComponent<MeshFilter>();
-            Debug.Log("[MeshGrid] Created MeshFilter component on child GameObject");
         }
 
-        Debug.Log("[MeshGrid] Step 2: Getting/creating MeshRenderer on child GameObject...");
-        
         // 2. Ensure MeshRenderer and a Material exist (required for visibility)
         var mr = gridMeshObject.GetComponent<MeshRenderer>();
         if (mr == null)
         {
-            Debug.Log("[MeshGrid] Creating MeshRenderer and material on child GameObject...");
             mr = gridMeshObject.AddComponent<MeshRenderer>();
             
             // Assign a default material to make the mesh visible and support vertex colors
@@ -377,7 +380,6 @@ public class MeshGrid : MonoBehaviour
                 if (standardShader != null)
                 {
                     mr.sharedMaterial = new Material(standardShader);
-                    Debug.Log("[MeshGrid] ✓ Material created successfully");
                 }
                 else
                 {
@@ -391,23 +393,17 @@ public class MeshGrid : MonoBehaviour
             }
         }
 
-        Debug.Log($"[MeshGrid] Step 3: Initializing mesh - Vertices needed: {vertsX * vertsZ} ({vertsX}x{vertsZ})");
-        
         // 3. Initialize or clear the mesh
         if (mesh == null)
         {
             mesh = new Mesh();
             mesh.name = "Procedural Grid";
-            Debug.Log("[MeshGrid] Created new mesh");
         }
         else
         {
             mesh.Clear();
-            Debug.Log("[MeshGrid] Cleared existing mesh");
         }
 
-        Debug.Log("[MeshGrid] Step 4: Generating vertices and UVs...");
-        
         // 4. Generate Vertices and UVs for the XZ (Horizontal) Plane
         vertices = new Vector3[vertsX * vertsZ];
         Vector2[] uvs = new Vector2[vertices.Length];
@@ -433,8 +429,6 @@ public class MeshGrid : MonoBehaviour
             }
         }
 
-        Debug.Log($"[MeshGrid] Step 5: Generating triangles - {numCellsX * numCellsY} quads = {numCellsX * numCellsY * 6} triangles");
-        
         // 5. Generate Triangles (Indices) (Unchanged and correct)
         triangles = new int[numCellsX * numCellsY * 6];
         int t = 0;
@@ -457,15 +451,11 @@ public class MeshGrid : MonoBehaviour
             }
         }
 
-        Debug.Log("[MeshGrid] Step 6: Assigning mesh data...");
-        
         // 6. Assign Mesh Data and finalize
         mesh.vertices = vertices;
         mesh.triangles = triangles;
         mesh.uv = uvs;
 
-        Debug.Log("[MeshGrid] Recalculating normals and bounds...");
-        
         // Optimize: Only recalculate if mesh has triangles
         if (mesh.triangles != null && mesh.triangles.Length > 0)
         {
@@ -473,26 +463,16 @@ public class MeshGrid : MonoBehaviour
         }
         mesh.RecalculateBounds();
 
-        Debug.Log("[MeshGrid] Step 7: Assigning mesh to MeshFilter...");
-        
         // Assign the generated mesh to the MeshFilter
         // Only set sharedMesh if we're in play mode (to avoid SendMessage errors during OnValidate)
         // The deferred coroutine ensures we're not in OnValidate when this runs
         if (Application.isPlaying)
         {
             mf.sharedMesh = mesh;
-            Debug.Log("[MeshGrid] ✓ Mesh assigned to MeshFilter");
             
             // Fire event when mesh is first generated
             OnMeshUpdated?.Invoke(mesh);
-            Debug.Log("[MeshGrid] ✓ OnMeshUpdated event fired");
         }
-        else
-        {
-            Debug.Log("[MeshGrid] Not in play mode, skipping mesh assignment (will be assigned later)");
-        }
-        
-            Debug.Log("[MeshGrid] ✓ generateMesh() complete");
         }
         finally
         {

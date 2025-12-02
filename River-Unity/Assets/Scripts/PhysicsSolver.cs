@@ -177,6 +177,11 @@ public class PhysicsSolver
                 // Update Velocities
                 uNew[i, j] = u[i, j] + dt * (-u_adv_x - u_adv_y + p_grad_x + nu * u_laplacian + h_slope_x);
                 vNew[i, j] = v[i, j] + dt * (-v_adv_x - v_adv_y + p_grad_y + nu * v_laplacian + h_slope_y);
+                
+                // Clamp velocities to prevent numerical instability
+                double maxVelocity = 10.0; // Maximum reasonable velocity in m/s
+                uNew[i, j] = Math.Max(-maxVelocity, Math.Min(maxVelocity, uNew[i, j]));
+                vNew[i, j] = Math.Max(-maxVelocity, Math.Min(maxVelocity, vNew[i, j]));
             }
         }
 
@@ -195,7 +200,21 @@ public class PhysicsSolver
         // 4. Update Water Depth (Continuity Equation)
         waterDepth = SolveContinuityEquation(waterDepth, uNew, vNew, dt);
 
-        // 5. Final assignment
+        // 5. Final assignment with additional safety clamping
+        for (int i = 0; i < nx; i++)
+        {
+            for (int j = 0; j < ny; j++)
+            {
+                // Final safety clamp on velocities
+                double maxVelocity = 10.0;
+                uNew[i, j] = Math.Max(-maxVelocity, Math.Min(maxVelocity, uNew[i, j]));
+                vNew[i, j] = Math.Max(-maxVelocity, Math.Min(maxVelocity, vNew[i, j]));
+                
+                // Clamp water depth to reasonable values
+                waterDepth[i, j] = Math.Max(0.0, Math.Min(10.0, waterDepth[i, j]));
+            }
+        }
+        
         u = uNew;
         v = vNew;
     }
@@ -342,7 +361,7 @@ public class PhysicsSolver
                 // Compute excess shear stress
                 double tau_excess = Math.Max(tau[i, j] - criticalShear, 0.0);
 
-                // Base sediment flux (Meyer-Peter and Müller type)
+                // Base sediment flux (Meyer-Peter and Mï¿½ller type)
                 qs_magnitude[i, j] = transportCoefficient * Math.Pow(tau_excess, 1.5);
             }
         }

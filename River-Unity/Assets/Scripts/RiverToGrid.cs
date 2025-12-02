@@ -62,15 +62,12 @@ public class RiverToGrid : MonoBehaviour
     /// </summary>
     private void HandleMeshLoaded(Mesh mesh)
     {
-        Debug.Log("[RiverToGrid] HandleMeshLoaded called - Received mesh from CSVGeometryLoader.");
-        
         if (mesh == null || mesh.vertices == null || mesh.vertices.Length == 0)
         {
             Debug.LogError("RiverToGrid: Received invalid mesh from CSVGeometryLoader.");
             return;
         }
 
-        Debug.Log($"[RiverToGrid] Mesh validated: {mesh.vertices.Length} vertices. Starting initialization...");
         Initialize(mesh.vertices);
     }
 
@@ -79,8 +76,6 @@ public class RiverToGrid : MonoBehaviour
     /// </summary>
     private bool Initialize(Vector3[] meshVertices)
     {
-        Debug.Log("[RiverToGrid] Initialize() called - Starting initialization...");
-        
         if (meshVertices == null || meshVertices.Length < 4 || meshVertices.Length % 2 != 0)
         {
             Debug.LogError("Mesh vertices are invalid for forming a strip polygon.");
@@ -95,19 +90,13 @@ public class RiverToGrid : MonoBehaviour
             return false;
         }
 
-        Debug.Log($"[RiverToGrid] Step 1: Calculating bounds for {verticesToUse.Length} vertices...");
-        
         // 1. Calculate Bounds
         MinX = verticesToUse.Min(v => v.x);
         MaxX = verticesToUse.Max(v => v.x);
         MinZ = verticesToUse.Min(v => v.z);
         MaxZ = verticesToUse.Max(v => v.z);
-        
-        Debug.Log($"[RiverToGrid] ✓ Bounds calculated: X[{MinX:F2}, {MaxX:F2}], Z[{MinZ:F2}, {MaxZ:F2}]");
 
         // 2. Calculate Grid Resolution
-        Debug.Log("[RiverToGrid] Step 2: Calculating grid resolution...");
-        
         float physicalWidth = MaxX - MinX;
         float physicalHeight = MaxZ - MinZ;
 
@@ -143,8 +132,6 @@ public class RiverToGrid : MonoBehaviour
         MinX -= padding;
         MinZ -= padding;
 
-        Debug.Log($"[RiverToGrid] Grid calculation: Physical size {physicalWidth:F2}x{physicalHeight:F2}, CellSize {cellSize}, Grid {calculatedWidth}x{calculatedHeight} (with {padding:F4} padding)");
-
         // Validate calculated dimensions before assigning
         if (calculatedWidth <= 0 || calculatedHeight <= 0)
         {
@@ -155,41 +142,30 @@ public class RiverToGrid : MonoBehaviour
         GridWidth = calculatedWidth;
         GridHeight = calculatedHeight;
 
-        Debug.Log($"[RiverToGrid] Step 3: Constructing river boundary polygon from {verticesToUse.Length} vertices...");
-        
         // 3. Construct the River Boundary Polygon (Ordered list of 2D points)
         riverPolygon = new List<Vector2>();
 
         // Add Left Bank points in order (indices 0, 2, 4, ...)
-        int leftBankPoints = 0;
         for (int i = 0; i < verticesToUse.Length; i += 2)
         {
             riverPolygon.Add(new Vector2(verticesToUse[i].x, verticesToUse[i].z));
-            leftBankPoints++;
         }
 
         // Add Right Bank points in reverse order (indices N-1, N-3, ...) to close the loop
-        int rightBankPoints = 0;
         for (int i = verticesToUse.Length - 1; i >= 1; i -= 2)
         {
             riverPolygon.Add(new Vector2(verticesToUse[i].x, verticesToUse[i].z));
-            rightBankPoints++;
         }
-        
-        Debug.Log($"[RiverToGrid] ✓ Polygon constructed: {riverPolygon.Count} points ({leftBankPoints} left bank + {rightBankPoints} right bank)");
         
         // Calculate bounding box for optimization
         CalculatePolygonBounds();
-        Debug.Log($"[RiverToGrid] ✓ Polygon bounds calculated: X[{polygonMinX:F2}, {polygonMaxX:F2}], Y[{polygonMinY:F2}, {polygonMaxY:F2}]");
 
         isInitialized = true;
 
-        Debug.Log("[RiverToGrid] Step 4: Firing OnGridInitialized event...");
-        
         // Fire event to notify other components that grid is initialized
         OnGridInitialized?.Invoke(GridWidth, GridHeight, MinX, MinZ, MaxX, MaxZ);
 
-        Debug.Log($"[RiverToGrid] ✓ Initialization complete: Grid Size {GridWidth}x{GridHeight}, Physical Bounds ({MaxX - MinX:F1}m x {MaxZ - MinZ:F1}m).");
+        Debug.Log($"[RiverToGrid] Grid initialized: {GridWidth}x{GridHeight} cells, CellSize: {cellSize}, Physical bounds: {MaxX - MinX:F1}m x {MaxZ - MinZ:F1}m");
         return true;
     }
 
@@ -207,8 +183,6 @@ public class RiverToGrid : MonoBehaviour
     /// </summary>
     public void GenerateCellTypesAndDepths(PhysicsSolver solver, float initialWaterDepth)
     {
-        Debug.Log($"[RiverToGrid] GenerateCellTypesAndDepths() called - Grid size: {GridWidth}x{GridHeight} ({GridWidth * GridHeight} cells)");
-        
         // Check that solver grid dimensions match RiverToGrid calculated dimensions
         // Note: solver.nx = gridWidth + 1 and solver.ny = gridHeight + 1 (vertex count)
         // We compare gridWidth and gridHeight (cell count) which should match
@@ -218,16 +192,14 @@ public class RiverToGrid : MonoBehaviour
             return;
         }
 
-        Debug.Log($"[RiverToGrid] Starting point-in-polygon tests for {GridWidth * GridHeight} cells (this may take a moment)...");
-        Debug.Log($"[RiverToGrid] River bounds: X[{MinX:F4}, {MaxX:F4}], Z[{MinZ:F4}, {MaxZ:F4}]");
-        Debug.Log($"[RiverToGrid] Grid will cover: X[{MinX:F4}, {MinX + GridWidth * cellSize:F4}], Z[{MinZ:F4}, {MinZ + GridHeight * cellSize:F4}]");
-        
         int totalCells = GridWidth * GridHeight;
-        int processedCells = 0;
         int fluidCells = 0;
         int bankCells = 0;
-        float lastProgressLog = 0f;
 
+        // Note: solver arrays are (gridWidth+1) x (gridHeight+1) = (nx, ny)
+        // We initialize cells [0..GridWidth-1, 0..GridHeight-1] based on geometry
+        // Boundary cells at indices GridWidth and GridHeight will use default/nearest neighbor values
+        
         for (int j = 0; j < GridHeight; j++) // Z-axis (height)
         {
             for (int i = 0; i < GridWidth; i++) // X-axis (width)
@@ -243,6 +215,11 @@ public class RiverToGrid : MonoBehaviour
                     // Cell is inside the river boundary
                     solver.cellType[i, j] = RiverCellType.FLUID;
                     solver.waterDepth[i, j] = initialWaterDepth;
+                    // Add initial velocity for visible flow with some variation
+                    // Add slight variation based on position to create initial flow pattern
+                    float flowVariation = 1.0f + 0.1f * Mathf.Sin(i * 0.1f) * Mathf.Cos(j * 0.1f);
+                    solver.u[i, j] = 0.1 * flowVariation;
+                    solver.v[i, j] = 0.01 * Mathf.Sin(i * 0.05f); // Small cross-flow component
                     fluidCells++;
                 }
                 else
@@ -250,25 +227,39 @@ public class RiverToGrid : MonoBehaviour
                     // Cell is outside the river boundary
                     solver.cellType[i, j] = RiverCellType.BANK;
                     solver.waterDepth[i, j] = 0.0f;
+                    solver.u[i, j] = 0.0;
+                    solver.v[i, j] = 0.0;
                     bankCells++;
                 }
 
                 // Initial Bed Elevation (h) is kept at 0, as no elevation data was provided in the CSV.
                 solver.h[i, j] = 0.0f;
-
-                processedCells++;
-                
-                // Log progress every 10%
-                float progress = (float)processedCells / totalCells;
-                if (progress - lastProgressLog >= 0.1f)
-                {
-                    Debug.Log($"[RiverToGrid] Progress: {progress * 100:F0}% ({processedCells}/{totalCells} cells processed)");
-                    lastProgressLog = progress;
-                }
             }
         }
         
-        Debug.Log($"[RiverToGrid] ✓ Cell type generation complete: {fluidCells} fluid cells, {bankCells} bank cells");
+        // Initialize boundary cells (at indices GridWidth and GridHeight) using nearest neighbor values
+        // This ensures the boundary cells have valid values for the solver
+        for (int j = 0; j < GridHeight; j++)
+        {
+            // Right boundary (i = GridWidth)
+            solver.cellType[GridWidth, j] = solver.cellType[GridWidth - 1, j];
+            solver.waterDepth[GridWidth, j] = solver.waterDepth[GridWidth - 1, j];
+            solver.u[GridWidth, j] = solver.u[GridWidth - 1, j];
+            solver.v[GridWidth, j] = solver.v[GridWidth - 1, j];
+            solver.h[GridWidth, j] = solver.h[GridWidth - 1, j];
+        }
+        
+        for (int i = 0; i <= GridWidth; i++)
+        {
+            // Top boundary (j = GridHeight)
+            solver.cellType[i, GridHeight] = solver.cellType[i, GridHeight - 1];
+            solver.waterDepth[i, GridHeight] = solver.waterDepth[i, GridHeight - 1];
+            solver.u[i, GridHeight] = solver.u[i, GridHeight - 1];
+            solver.v[i, GridHeight] = solver.v[i, GridHeight - 1];
+            solver.h[i, GridHeight] = solver.h[i, GridHeight - 1];
+        }
+        
+        Debug.Log($"[RiverToGrid] Cell types generated: {fluidCells} fluid, {bankCells} bank cells");
         
         if (fluidCells == 0)
         {

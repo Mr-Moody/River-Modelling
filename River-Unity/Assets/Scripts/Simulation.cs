@@ -22,10 +22,14 @@ public class SimulationController : MonoBehaviour
     [Range(0.1f, 10f)]
     public float RiverGeometryElevationScale = 1.0f;
     
-    [Header("Visualization")]
     public enum VisualizationMode { Velocity, Erosion }
+    [Header("Visualization")]
     [Tooltip("Visualization mode: Velocity shows flow speed, Erosion shows bed elevation changes and bank migration.")]
-    public VisualizationMode visualizationMode = VisualizationMode.Velocity;
+    public VisualizationMode visualizationMode = VisualizationMode.Erosion;
+    
+    [Tooltip("Erosion threshold percentile for visualization. Only erosion rates above this percentile will show as red. Higher values = less red (more selective). Recommended: 0.7-0.9")]
+    [Range(0.0f, 1.0f)]
+    public float ErosionVisualizationThreshold = 0.85f; // Only show top 15% of erosion rates as red
     
     [Header("Terrain")]
     [Tooltip("If enabled, generates and updates 3D terrain mesh around the river.")]
@@ -483,21 +487,34 @@ public class SimulationController : MonoBehaviour
         int numCrossSections = riverMeshSolver.numCrossSections;
         int widthResolution = riverMeshSolver.widthResolution;
         
-        // Find max/min erosion rates for normalization
-        float maxErosionRate = 0.0f;
-        float minErosionRate = 0.0f;
+        // Collect all erosion rates for percentile-based normalization
+        List<float> erosionRates = new List<float>();
         
         for (int i = 0; i < numCrossSections; i++)
         {
             for (int w = 0; w < widthResolution; w++)
             {
                 double erosionRate = Math.Abs(riverMeshSolver.GetErosionRate(i, w));
-                if (erosionRate > maxErosionRate) maxErosionRate = (float)erosionRate;
+                erosionRates.Add((float)erosionRate);
             }
         }
         
-        // Set minimum threshold to avoid division by zero
-        if (maxErosionRate < 0.0001f) maxErosionRate = 0.001f;
+        // Use percentile-based normalization to avoid outliers dominating
+        // Sort and use 95th percentile as max (or actual max if smaller)
+        erosionRates.Sort();
+        float percentile95 = erosionRates.Count > 0 ? erosionRates[Mathf.Min((int)(erosionRates.Count * 0.95f), erosionRates.Count - 1)] : 0.001f;
+        float maxErosionRate = Mathf.Max(percentile95, 0.001f);
+        
+        // Threshold for significant erosion - use configurable percentile
+        // Only erosion rates above this percentile will show as red
+        float thresholdPercentile = Mathf.Clamp01(ErosionVisualizationThreshold);
+        int thresholdIndex = erosionRates.Count > 0 ? Mathf.Min((int)(erosionRates.Count * thresholdPercentile), erosionRates.Count - 1) : 0;
+        float significantErosionThreshold = erosionRates.Count > 0 ? erosionRates[thresholdIndex] : 0.001f;
+        
+        // Ensure threshold is at least a reasonable fraction of max to avoid showing everything
+        // This ensures only truly significant erosion shows as red
+        float minThresholdFraction = 0.3f; // At least 30% of max must be threshold
+        significantErosionThreshold = Mathf.Max(significantErosionThreshold, maxErosionRate * minThresholdFraction);
         
         // Update vertices and colors with erosion data
         for (int i = 0; i < numCrossSections; i++)
@@ -516,7 +533,18 @@ public class SimulationController : MonoBehaviour
                 // Get erosion rate (negative = erosion, positive = deposition)
                 double erosionRate = riverMeshSolver.GetErosionRate(i, w);
                 float absErosionRate = Mathf.Abs((float)erosionRate);
-                float normalizedErosion = Mathf.Clamp01(absErosionRate / maxErosionRate);
+                
+                // Only normalize if above threshold, otherwise show as zero (blue)
+                float normalizedErosion = 0.0f;
+                if (absErosionRate > significantErosionThreshold)
+                {
+                    // Normalize based on threshold range (threshold to max)
+                    float range = maxErosionRate - significantErosionThreshold;
+                    if (range > 0.0001f)
+                    {
+                        normalizedErosion = Mathf.Clamp01((absErosionRate - significantErosionThreshold) / range);
+                    }
+                }
                 
                 // Determine if this is deposition (positive dh_dt) or erosion (negative dh_dt)
                 float isDeposition = (erosionRate > 0) ? 1.0f : 0.0f;

@@ -7,12 +7,13 @@ Material:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: RiverMaterial
-  m_Shader: {fileID: 4800000, guid: d1ed544d14b273747a5e71f4ef97e70b, type: 3}
+  m_Name: RiverDeformation
+  m_Shader: {fileID: 4800000, guid: fec3e68b245527a4ea46846cbb58d02b, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
-  m_InvalidKeywords: []
+  m_InvalidKeywords:
+  - _SHOWDEPOSITION_ON
   m_LightmapFlags: 4
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
@@ -65,15 +66,19 @@ Material:
     - _Cutoff: 0.5
     - _DetailNormalMapScale: 1
     - _DstBlend: 0
+    - _ErosionThreshold: 0.001
     - _GlossMapScale: 1
     - _Glossiness: 0.5
     - _GlossyReflections: 1
+    - _MaxErosionRate: 1
     - _MaxVelocity: 1
     - _Metallic: 0
+    - _MinErosionRate: -1
     - _MinVelocity: 0
     - _Mode: 0
     - _OcclusionStrength: 1
     - _Parallax: 0.02
+    - _ShowDeposition: 1
     - _SmoothnessTextureChannel: 0
     - _SpecularHighlights: 1
     - _SrcBlend: 1

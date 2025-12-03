@@ -32,7 +32,7 @@ public class CameraController : MonoBehaviour
         }
         
         // Find SimulationController in the scene
-        simulationController = FindObjectOfType<SimulationController>();
+        simulationController = FindFirstObjectByType<SimulationController>();
         if (simulationController == null)
         {
             Debug.LogWarning("CameraController: SimulationController not found in scene. F key toggle will not work.");

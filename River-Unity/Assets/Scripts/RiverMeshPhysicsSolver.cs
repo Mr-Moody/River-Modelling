@@ -35,6 +35,9 @@ public class RiverMeshPhysicsSolver
     private double[,] cumulativeBankErosion;  // Cumulative erosion at bank cells (for migration)
     public double bankMigrationThreshold = 0.01;  // Erosion threshold before converting FLUID to BANK (meters)
     
+    // Current erosion rate (stored from last ExnerEquation call)
+    private double[,] current_dh_dt;  // Current bed elevation change rate
+    
     // Physical spacing (approximate, will be calculated from mesh)
     private double[] ds;             // Distance between cross-sections along river
     private double[] dw;             // Distance across river at each cross-section
@@ -68,13 +71,15 @@ public class RiverMeshPhysicsSolver
         waterDepth = new double[numCrossSections, widthResolution];
         cellType = new int[numCrossSections, widthResolution];
         cumulativeBankErosion = new double[numCrossSections, widthResolution];
+        current_dh_dt = new double[numCrossSections, widthResolution];
         
-        // Initialize cumulative bank erosion to zero
+        // Initialize cumulative bank erosion and dh_dt to zero
         for (int i = 0; i < numCrossSections; i++)
         {
             for (int w = 0; w < widthResolution; w++)
             {
                 cumulativeBankErosion[i, w] = 0.0;
+                current_dh_dt[i, w] = 0.0;
             }
         }
         
@@ -446,6 +451,36 @@ public class RiverMeshPhysicsSolver
                          v[crossSectionIndex, widthIndex] * v[crossSectionIndex, widthIndex]);
     }
     
+    /// <summary>
+    /// Gets the current bed elevation change rate (dh_dt) at a vertex.
+    /// Positive values indicate deposition (bed rising), negative values indicate erosion (bed lowering).
+    /// </summary>
+    public double GetErosionRate(int crossSectionIndex, int widthIndex)
+    {
+        if (current_dh_dt == null) return 0.0;
+        return current_dh_dt[crossSectionIndex, widthIndex];
+    }
+    
+    /// <summary>
+    /// Gets the cumulative bank erosion at a vertex.
+    /// Higher values indicate more bank erosion and potential bank migration.
+    /// </summary>
+    public double GetCumulativeBankErosion(int crossSectionIndex, int widthIndex)
+    {
+        if (cumulativeBankErosion == null) return 0.0;
+        return cumulativeBankErosion[crossSectionIndex, widthIndex];
+    }
+    
+    /// <summary>
+    /// Checks if a cell is experiencing active bank migration (cumulative erosion near threshold).
+    /// </summary>
+    public bool IsBankMigrating(int crossSectionIndex, int widthIndex)
+    {
+        if (cumulativeBankErosion == null) return false;
+        // Consider bank migrating if cumulative erosion is above 50% of threshold
+        return cumulativeBankErosion[crossSectionIndex, widthIndex] >= bankMigrationThreshold * 0.5;
+    }
+    
     // --- Sediment and Erosion Methods (from physics.py) ---
     
     /// <summary>
@@ -809,6 +844,9 @@ public class RiverMeshPhysicsSolver
         // Apply spatial smoothing to reduce numerical noise
         // Conservative smoothing to prevent mesh peaking while preserving physical behavior
         h_new = ApplySpatialSmoothing(h_new, smoothingFactor: 0.05);
+        
+        // Store current erosion rate for visualization
+        current_dh_dt = dh_dt;
         
         return (dh_dt, h_new);
     }

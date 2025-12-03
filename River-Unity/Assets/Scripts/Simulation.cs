@@ -22,6 +22,11 @@ public class SimulationController : MonoBehaviour
     [Range(0.1f, 10f)]
     public float RiverGeometryElevationScale = 1.0f;
     
+    [Header("Visualization")]
+    public enum VisualizationMode { Velocity, Erosion }
+    [Tooltip("Visualization mode: Velocity shows flow speed, Erosion shows bed elevation changes and bank migration.")]
+    public VisualizationMode visualizationMode = VisualizationMode.Velocity;
+    
     [Header("Terrain")]
     [Tooltip("If enabled, generates and updates 3D terrain mesh around the river.")]
     public bool EnableTerrain = false; // Disabled by default since we're not using grid anymore
@@ -196,7 +201,14 @@ public class SimulationController : MonoBehaviour
             // Simulation is paused - still update visualization if mesh is ready
             if (UpdateRiverGeometry && geometryLoader != null)
             {
-                UpdateRiverGeometryMesh();
+                if (visualizationMode == VisualizationMode.Erosion)
+                {
+                    UpdateRiverGeometryMeshWithErosion();
+                }
+                else
+                {
+                    UpdateRiverGeometryMesh();
+                }
             }
             else
             {
@@ -222,7 +234,14 @@ public class SimulationController : MonoBehaviour
         // Update the visual mesh with the new data
         if (UpdateRiverGeometry)
         {
-            UpdateRiverGeometryMesh();
+            if (visualizationMode == VisualizationMode.Erosion)
+            {
+                UpdateRiverGeometryMeshWithErosion();
+            }
+            else
+            {
+                UpdateRiverGeometryMesh();
+            }
         }
     }
 
@@ -428,6 +447,105 @@ public class SimulationController : MonoBehaviour
                 {
                     mf.sharedMesh = riverMesh;
                 }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Updates vertex colors with erosion data for erosion heatmap visualization.
+    /// Red channel: normalized erosion rate (0-1)
+    /// Green channel: deposition flag (1.0 = deposition, 0.0 = erosion)
+    /// Blue channel: bank migration indicator (1.0 = active migration, 0.0 = no migration)
+    /// </summary>
+    private void UpdateRiverGeometryMeshWithErosion()
+    {
+        Mesh riverMesh = geometryLoader.GetMesh();
+        if (riverMesh == null || riverMesh.vertices == null)
+        {
+            return;
+        }
+        
+        Vector3[] riverVertices = riverMesh.vertices;
+        
+        // Initialize or resize color array
+        Color[] colors = riverMesh.colors;
+        if (colors == null || colors.Length != riverVertices.Length)
+        {
+            colors = new Color[riverVertices.Length];
+        }
+        
+        if (riverMeshSolver == null || !geometryLoader.useGridMesh)
+        {
+            return; // Solver not initialized or mesh not in grid format
+        }
+
+        // Use river mesh solver (direct mapping - vertices correspond to solver cells)
+        int numCrossSections = riverMeshSolver.numCrossSections;
+        int widthResolution = riverMeshSolver.widthResolution;
+        
+        // Find max/min erosion rates for normalization
+        float maxErosionRate = 0.0f;
+        float minErosionRate = 0.0f;
+        
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                double erosionRate = Math.Abs(riverMeshSolver.GetErosionRate(i, w));
+                if (erosionRate > maxErosionRate) maxErosionRate = (float)erosionRate;
+            }
+        }
+        
+        // Set minimum threshold to avoid division by zero
+        if (maxErosionRate < 0.0001f) maxErosionRate = 0.001f;
+        
+        // Update vertices and colors with erosion data
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                int vertexIdx = i * widthResolution + w;
+                if (vertexIdx >= riverVertices.Length) continue;
+                
+                Vector3 vertex = riverVertices[vertexIdx];
+                
+                // Update elevation from bed elevation
+                float bedElevation = (float)riverMeshSolver.h[i, w] * RiverGeometryElevationScale;
+                riverVertices[vertexIdx] = new Vector3(vertex.x, bedElevation, vertex.z);
+                
+                // Get erosion rate (negative = erosion, positive = deposition)
+                double erosionRate = riverMeshSolver.GetErosionRate(i, w);
+                float absErosionRate = Mathf.Abs((float)erosionRate);
+                float normalizedErosion = Mathf.Clamp01(absErosionRate / maxErosionRate);
+                
+                // Determine if this is deposition (positive dh_dt) or erosion (negative dh_dt)
+                float isDeposition = (erosionRate > 0) ? 1.0f : 0.0f;
+                
+                // Check for bank migration
+                float bankMigration = riverMeshSolver.IsBankMigrating(i, w) ? 1.0f : 0.0f;
+                
+                // Store in vertex color: R = normalized erosion, G = deposition flag, B = bank migration
+                colors[vertexIdx] = new Color(normalizedErosion, isDeposition, bankMigration, 1);
+            }
+        }
+        
+        // Regenerate triangles to respect cell type boundaries
+        RegenerateTrianglesWithCellTypeBoundaries(riverMesh, numCrossSections, widthResolution);
+        
+        // Apply updated vertices and colors to mesh
+        riverMesh.vertices = riverVertices;
+        riverMesh.colors = colors;
+        riverMesh.RecalculateNormals();
+        riverMesh.RecalculateBounds();
+        
+        // Update the MeshFilter on the child GameObject to reflect changes
+        GameObject riverMeshObject = RiverGeometry.transform.Find("RiverMesh")?.gameObject;
+        if (riverMeshObject != null)
+        {
+            MeshFilter mf = riverMeshObject.GetComponent<MeshFilter>();
+            if (mf != null)
+            {
+                mf.sharedMesh = riverMesh;
             }
         }
     }

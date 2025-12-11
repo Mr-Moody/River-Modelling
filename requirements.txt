@@ -2,3 +2,4 @@ numpy
 matplotlib
 pyvista>=0.40.0
 
+# cline_analysis.py (custom data analysis module) is REQUIRED to be in the same folder as data_extraction.ipynb

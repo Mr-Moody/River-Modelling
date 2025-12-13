@@ -2,6 +2,9 @@ using UnityEngine;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
 
 /// <summary>
 /// The main simulation controller class.
@@ -71,6 +74,13 @@ public class SimulationController : MonoBehaviour
     
     [Tooltip("Erosion threshold before bank migrates (meters). Lower = faster migration. Recommended: 0.001-0.01")]
     public double BankMigrationThreshold = 0.005;  // Lower = migrates more frequently
+    
+    [Header("Output")]
+    [Tooltip("Automatically export river mesh CSV when simulation stops.")]
+    public bool AutoExportMeshOnStop = true;
+    
+    [Tooltip("Filename for exported river mesh CSV (written to persistentDataPath).")]
+    public string MeshExportFileName = "RiverMeshOutput.csv";
 
     private RiverMeshPhysicsSolver riverMeshSolver;
 
@@ -188,10 +198,17 @@ public class SimulationController : MonoBehaviour
         }
         
         // Check if RunSimulation state changed
+        bool wasRunning = lastRunSimulationState;
         if (RunSimulation != lastRunSimulationState)
         {
             Debug.Log($"[SimulationController] RunSimulation toggled to: {RunSimulation}. Solver initialized: {riverMeshSolver != null}");
             lastRunSimulationState = RunSimulation;
+            
+            // If we just stopped, export mesh if configured
+            if (wasRunning && !RunSimulation && AutoExportMeshOnStop)
+            {
+                ExportCurrentRiverMesh();
+            }
         }
         
         // Only run simulation if solver is initialized and RunSimulation toggle is on
@@ -687,6 +704,91 @@ public class SimulationController : MonoBehaviour
                     mat.SetFloat("_MinVelocity", 0.0f);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Exports the current river mesh geometry to CSV matching the Jurua schema.
+    /// Columns: ,order,group,centerline_x,centerline_y,centerline_x_corrected,centerline_y_corrected,right_bank_x,right_bank_y,left_bank_x,left_bank_y,width (m),curvature
+    /// </summary>
+    /// <param name="overridePath">Optional full path override. Defaults to Application.persistentDataPath/MeshExportFileName.</param>
+    public void ExportCurrentRiverMesh(string overridePath = null)
+    {
+        if (geometryLoader == null)
+        {
+            Debug.LogError("[SimulationController] Cannot export mesh - geometryLoader is null.");
+            return;
+        }
+        if (riverMeshSolver == null)
+        {
+            Debug.LogError("[SimulationController] Cannot export mesh - solver not initialized.");
+            return;
+        }
+        
+        Mesh mesh = geometryLoader.GetMesh();
+        if (mesh == null || mesh.vertices == null)
+        {
+            Debug.LogError("[SimulationController] Cannot export mesh - mesh is null.");
+            return;
+        }
+        
+        Vector3[] verts = mesh.vertices;
+        int numCrossSections = riverMeshSolver.numCrossSections;
+        int widthRes = riverMeshSolver.widthResolution;
+        if (verts.Length < numCrossSections * widthRes)
+        {
+            Debug.LogError($"[SimulationController] Cannot export mesh - vertex count {verts.Length} insufficient for {numCrossSections}x{widthRes} grid.");
+            return;
+        }
+        
+        string path = string.IsNullOrEmpty(overridePath)
+            ? Path.Combine(Application.persistentDataPath, MeshExportFileName)
+            : overridePath;
+        
+        var sb = new StringBuilder();
+        sb.AppendLine(",order,group,centerline_x,centerline_y,centerline_x_corrected,centerline_y_corrected,right_bank_x,right_bank_y,left_bank_x,left_bank_y,width (m),curvature");
+        
+        var culture = CultureInfo.InvariantCulture;
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            int leftIdx = i * widthRes;
+            int rightIdx = i * widthRes + (widthRes - 1);
+            
+            Vector3 left = verts[leftIdx];
+            Vector3 right = verts[rightIdx];
+            Vector3 center = (left + right) * 0.5f;
+            
+            // Use x/z as planform coordinates; y is elevation
+            float width = Vector2.Distance(new Vector2(left.x, left.z), new Vector2(right.x, right.z));
+            
+            int indexCol = i;          // leading unnamed column
+            float order = i + 1;       // mimic sequential order
+            float group = 1.0f;        // single group
+            float curvature = 0.0f;    // not computed here
+            
+            sb.Append(indexCol.ToString(culture)).Append(',')
+              .Append(order.ToString(culture)).Append(',')
+              .Append(group.ToString(culture)).Append(',')
+              .Append(center.x.ToString(culture)).Append(',')
+              .Append(center.z.ToString(culture)).Append(',')
+              .Append(center.x.ToString(culture)).Append(',')
+              .Append(center.z.ToString(culture)).Append(',')
+              .Append(right.x.ToString(culture)).Append(',')
+              .Append(right.z.ToString(culture)).Append(',')
+              .Append(left.x.ToString(culture)).Append(',')
+              .Append(left.z.ToString(culture)).Append(',')
+              .Append(width.ToString(culture)).Append(',')
+              .Append(curvature.ToString(culture)).AppendLine();
+        }
+        
+        try
+        {
+            File.WriteAllText(path, sb.ToString());
+            Debug.Log($"[SimulationController] Exported river mesh CSV to: {path}");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[SimulationController] Failed to export mesh CSV: {ex.Message}");
         }
     }
 

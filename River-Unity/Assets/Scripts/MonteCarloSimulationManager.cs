@@ -87,6 +87,16 @@ public class MonteCarloSimulationManager : MonoBehaviour
     [Range(1, 100)]
     public int statisticsInterval = 10;
     
+    [Header("Export Configuration")]
+    [Tooltip("Automatically export results to CSV files when ensemble completes")]
+    public bool autoExportResults = true;
+    
+    [Tooltip("Base path for export folder (empty = use Application.persistentDataPath)")]
+    public string exportBasePath = "";
+    
+    [Tooltip("Export full field data to CSV files (requires storeFullEnsemble=true or will enable it automatically)")]
+    public bool exportFullFields = true;
+    
     // ═══════════════════════════════════════════════════════════════════════════
     // RUNTIME STATE
     // ═══════════════════════════════════════════════════════════════════════════
@@ -96,12 +106,19 @@ public class MonteCarloSimulationManager : MonoBehaviour
     private int currentRealization = 0;
     private int currentStep = 0;
     
+    // Time tracking
+    private float totalSimulationTime = 0f;
+    private float elapsedSimulationTime = 0f;
+    
     // Ensemble storage
     private MonteCarloEnsemble ensemble;
     
     // Current realization parameters
     private double currentTransportCoefficient;
     private int currentPerlinSeed;
+    
+    // Export path
+    private string resultsFolderPath = "";
     
     // Events for external monitoring
     public event Action<int, int> OnRealizationStarted;      // (realization index, total)
@@ -163,8 +180,34 @@ public class MonteCarloSimulationManager : MonoBehaviour
         Debug.Log($"[MonteCarloManager] Transport Coefficient Distribution: LogNormal(μ={transportCoefficientMu:F3}, σ={transportCoefficientSigma:F3})");
         Debug.Log($"[MonteCarloManager] Perlin Noise: Enabled={enablePerlinBedElevation}, Amp={perlinAmplitude:F3}, Freq={perlinFrequency:F2}");
         
+        // Calculate total simulation time
+        totalSimulationTime = numRealizations * stepsPerRealization * timeStep;
+        elapsedSimulationTime = 0f;
+        Debug.Log($"[MonteCarloManager] Total simulation time: {totalSimulationTime:F2}s ({numRealizations} realizations × {stepsPerRealization} steps × {timeStep:F4}s/step)");
+        
+        // Create results folder if export is enabled
+        if (autoExportResults)
+        {
+            resultsFolderPath = MonteCarloCSVExporter.CreateResultsFolder(exportBasePath);
+            if (!string.IsNullOrEmpty(resultsFolderPath))
+            {
+                Debug.Log($"[MonteCarloManager] Results will be exported to: {resultsFolderPath}");
+            }
+            else
+            {
+                Debug.LogWarning("[MonteCarloManager] Failed to create results folder. Export may fail.");
+            }
+        }
+        
+        // Ensure full fields are stored if export is enabled
+        bool shouldStoreFullFields = storeFullEnsemble || (exportFullFields && autoExportResults);
+        if (shouldStoreFullFields && !storeFullEnsemble)
+        {
+            Debug.Log("[MonteCarloManager] Enabling full field storage for CSV export (storeFullEnsemble will be enabled automatically)");
+        }
+        
         // Initialize ensemble storage
-        ensemble = new MonteCarloEnsemble(numRealizations, storeFullEnsemble);
+        ensemble = new MonteCarloEnsemble(numRealizations, shouldStoreFullFields);
         
         // Start first realization
         currentRealization = 0;
@@ -178,16 +221,30 @@ public class MonteCarloSimulationManager : MonoBehaviour
     /// </summary>
     public void StopEnsembleSimulation()
     {
+        Debug.Log("[MonteCarloManager] ===== STOP REQUESTED =====");
+        
         if (!isRunning)
         {
+            Debug.LogWarning("[MonteCarloManager] Stop requested but simulation is not running.");
             return;
         }
         
+        Debug.Log($"[MonteCarloManager] Stopping simulation at realization {currentRealization + 1}/{numRealizations}");
         isRunning = false;
-        simulationController.RunSimulation = false;
+        
+        if (simulationController != null)
+        {
+            simulationController.RunSimulation = false;
+            Debug.Log("[MonteCarloManager] Set RunSimulation = false");
+        }
+        else
+        {
+            Debug.LogError("[MonteCarloManager] Cannot stop - SimulationController is null!");
+        }
+        
         ResetMonteCarloTransportCoefficient();
         
-        Debug.Log($"[MonteCarloManager] Ensemble simulation stopped at realization {currentRealization}/{numRealizations}");
+        Debug.Log($"[MonteCarloManager] Ensemble simulation stopped at realization {currentRealization + 1}/{numRealizations}");
     }
     
     /// <summary>
@@ -233,9 +290,14 @@ public class MonteCarloSimulationManager : MonoBehaviour
     {
         if (currentRealization >= numRealizations)
         {
+            Debug.Log($"[MonteCarloManager] All realizations complete ({currentRealization}/{numRealizations}), completing ensemble...");
             CompleteEnsemble();
             return;
         }
+        
+        float timePercentage = totalSimulationTime > 0 ? (elapsedSimulationTime / totalSimulationTime * 100f) : 0f;
+        Debug.Log($"[MonteCarloManager] ===== Starting Stage {currentRealization + 1} / {numRealizations} =====");
+        Debug.Log($"[MonteCarloManager] Time: {elapsedSimulationTime:F2}s / {totalSimulationTime:F2}s ({timePercentage:F1}%)");
         
         // Sample random parameters for this realization
         currentTransportCoefficient = SampleTransportCoefficient();
@@ -245,13 +307,16 @@ public class MonteCarloSimulationManager : MonoBehaviour
                   $"K={currentTransportCoefficient:F6}, PerlinSeed={currentPerlinSeed}");
         
         // Fire event
+        Debug.Log($"[MonteCarloManager] Firing OnRealizationStarted event for stage {currentRealization + 1}");
         OnRealizationStarted?.Invoke(currentRealization, numRealizations);
         
         // Reset and configure the solver
+        Debug.Log($"[MonteCarloManager] Resetting solver with new parameters...");
         ResetSolverWithParameters(currentTransportCoefficient, currentPerlinSeed);
         
         // Start simulation
         currentStep = 0;
+        Debug.Log($"[MonteCarloManager] Setting RunSimulation = true for stage {currentRealization + 1}");
         simulationController.RunSimulation = true;
     }
     
@@ -397,10 +462,21 @@ public class MonteCarloSimulationManager : MonoBehaviour
         {
             currentStep++;
             
+            // Update elapsed time
+            elapsedSimulationTime += timeStep;
+            
             // Report progress
             float progress = (currentRealization * stepsPerRealization + currentStep) / 
                             (float)(numRealizations * stepsPerRealization) * 100f;
             OnProgressUpdated?.Invoke(currentRealization, currentStep, progress);
+            
+            // Log time progress periodically (every 100 steps)
+            if (currentStep % 100 == 0)
+            {
+                float timePercentage = totalSimulationTime > 0 ? (elapsedSimulationTime / totalSimulationTime * 100f) : 0f;
+                Debug.Log($"[MonteCarloManager] Progress: Stage {currentRealization + 1}/{numRealizations}, Step {currentStep}/{stepsPerRealization}, " +
+                         $"Time: {elapsedSimulationTime:F2}s / {totalSimulationTime:F2}s ({timePercentage:F1}%)");
+            }
             
             // Collect statistics at intervals
             if (currentStep % statisticsInterval == 0)
@@ -465,25 +541,49 @@ public class MonteCarloSimulationManager : MonoBehaviour
     /// </summary>
     private void CompleteCurrentRealization()
     {
+        float timePercentage = totalSimulationTime > 0 ? (elapsedSimulationTime / totalSimulationTime * 100f) : 0f;
+        Debug.Log($"[MonteCarloManager] ===== Completing Stage {currentRealization + 1} / {numRealizations} =====");
+        Debug.Log($"[MonteCarloManager] Time: {elapsedSimulationTime:F2}s / {totalSimulationTime:F2}s ({timePercentage:F1}%)");
+        
         RiverMeshPhysicsSolver solver = simulationController.GetSolver();
-        if (solver == null) return;
+        if (solver == null)
+        {
+            Debug.LogError("[MonteCarloManager] Cannot complete realization - solver is null!");
+            return;
+        }
         
         // Stop this realization
+        Debug.Log($"[MonteCarloManager] Stopping simulation for stage {currentRealization + 1}");
         simulationController.RunSimulation = false;
         
+        // Determine if we need to store full fields (for export or ensemble storage)
+        bool shouldStoreFullFields = storeFullEnsemble || (exportFullFields && autoExportResults);
+        
         // Create result object
+        Debug.Log($"[MonteCarloManager] Creating result object for stage {currentRealization + 1}...");
         MonteCarloRealizationResult result = new MonteCarloRealizationResult(
             currentRealization,
             currentTransportCoefficient,
             currentPerlinSeed,
             solver,
-            storeFullEnsemble
+            shouldStoreFullFields
         );
         
         // Store in ensemble
         ensemble.AddRealization(result);
         
+        // Export full field data for this stage if enabled
+        if (autoExportResults && exportFullFields && !string.IsNullOrEmpty(resultsFolderPath))
+        {
+            bool exportSuccess = MonteCarloCSVExporter.ExportFullFieldData(result, resultsFolderPath, currentRealization + 1);
+            if (!exportSuccess)
+            {
+                Debug.LogWarning($"[MonteCarloManager] Failed to export full field data for stage {currentRealization + 1}");
+            }
+        }
+        
         // Fire event
+        Debug.Log($"[MonteCarloManager] Firing OnRealizationCompleted event for stage {currentRealization + 1}");
         OnRealizationCompleted?.Invoke(currentRealization, result);
         
         Debug.Log($"[MonteCarloManager] Completed realization {currentRealization + 1}/{numRealizations}: " +
@@ -494,11 +594,13 @@ public class MonteCarloSimulationManager : MonoBehaviour
         
         if (currentRealization < numRealizations)
         {
+            Debug.Log($"[MonteCarloManager] Moving to next stage. Will start stage {currentRealization + 1} in 0.1 seconds...");
             // Small delay before next realization
             Invoke(nameof(StartNextRealization), 0.1f);
         }
         else
         {
+            Debug.Log($"[MonteCarloManager] All stages complete! Completing ensemble...");
             CompleteEnsemble();
         }
     }
@@ -521,6 +623,20 @@ public class MonteCarloSimulationManager : MonoBehaviour
         Debug.Log($"[MonteCarloManager] Ensemble Std Bed Elevation: {ensemble.EnsembleStdBedElevation:F4}");
         Debug.Log($"[MonteCarloManager] 95% CI: [{ensemble.BedElevation95CI_Lower:F4}, {ensemble.BedElevation95CI_Upper:F4}]");
         Debug.Log($"[MonteCarloManager] ═══════════════════════════════════════════════════════════");
+        
+        // Export summary statistics if enabled
+        if (autoExportResults && !string.IsNullOrEmpty(resultsFolderPath))
+        {
+            bool exportSuccess = MonteCarloCSVExporter.ExportSummaryStatistics(ensemble, resultsFolderPath);
+            if (exportSuccess)
+            {
+                Debug.Log($"[MonteCarloManager] Summary statistics exported to: {resultsFolderPath}");
+            }
+            else
+            {
+                Debug.LogWarning("[MonteCarloManager] Failed to export summary statistics");
+            }
+        }
         
         // Fire event
         OnEnsembleCompleted?.Invoke(ensemble);

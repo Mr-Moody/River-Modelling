@@ -492,6 +492,52 @@ public class RiverMeshPhysicsSolver
         return cumulativeBankErosion[crossSectionIndex, widthIndex] >= bankMigrationThreshold * 0.5;
     }
     
+    /// <summary>
+    /// Gets the bank edge positions for a given cross-section.
+    /// Returns the width indices where the left and right banks are located.
+    /// </summary>
+    /// <param name="crossSectionIndex">The cross-section index</param>
+    /// <returns>Tuple of (leftBankEdge, rightBankEdge) width indices. Returns (-1, -1) if not found.</returns>
+    public (int leftBankEdge, int rightBankEdge) GetBankEdges(int crossSectionIndex)
+    {
+        int leftBankEdge = -1;
+        int rightBankEdge = -1;
+        
+        // Find the left bank edge: find the rightmost BANK cell (innermost from left)
+        for (int w = 0; w < widthResolution - 1; w++)
+        {
+            if (cellType[crossSectionIndex, w] == RiverCellType.BANK && cellType[crossSectionIndex, w + 1] == RiverCellType.FLUID)
+            {
+                leftBankEdge = w;
+                break;
+            }
+        }
+        
+        // If no bank edge found at boundary, check if w=0 is bank
+        if (leftBankEdge == -1 && cellType[crossSectionIndex, 0] == RiverCellType.BANK)
+        {
+            leftBankEdge = 0;
+        }
+        
+        // Find the right bank edge: find the leftmost BANK cell (innermost from right)
+        for (int w = widthResolution - 1; w > 0; w--)
+        {
+            if (cellType[crossSectionIndex, w] == RiverCellType.BANK && cellType[crossSectionIndex, w - 1] == RiverCellType.FLUID)
+            {
+                rightBankEdge = w;
+                break;
+            }
+        }
+        
+        // If no bank edge found at boundary, check if rightmost is bank
+        if (rightBankEdge == -1 && cellType[crossSectionIndex, widthResolution - 1] == RiverCellType.BANK)
+        {
+            rightBankEdge = widthResolution - 1;
+        }
+        
+        return (leftBankEdge, rightBankEdge);
+    }
+    
     // --- Sediment and Erosion Methods (from physics.py) ---
     
     /// <summary>

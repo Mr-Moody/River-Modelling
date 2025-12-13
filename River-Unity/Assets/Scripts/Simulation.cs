@@ -25,6 +25,9 @@ public class SimulationController : MonoBehaviour
     [Range(0.1f, 10f)]
     public float RiverGeometryElevationScale = 1.0f;
     
+    [Tooltip("Enable horizontal bank migration visualization. When enabled, river width changes are visible as banks migrate. Disable if mesh disappears.")]
+    public bool EnableHorizontalBankMigration = false;
+    
     public enum VisualizationMode { Velocity, Erosion }
     [Header("Visualization")]
     [Tooltip("Visualization mode: Velocity shows flow speed, Erosion shows bed elevation changes and bank migration.")]
@@ -533,19 +536,143 @@ public class SimulationController : MonoBehaviour
         float minThresholdFraction = 0.3f; // At least 30% of max must be threshold
         significantErosionThreshold = Mathf.Max(significantErosionThreshold, maxErosionRate * minThresholdFraction);
         
+        // Store original bank positions for each cross-section (for horizontal migration)
+        // Use current mesh boundary vertices as reference positions (these represent the original bank positions)
+        Vector3[] originalLeftBank = new Vector3[numCrossSections];
+        Vector3[] originalRightBank = new Vector3[numCrossSections];
+        bool hasValidBankPositions = false;
+        
+        // Extract bank positions from current mesh (first and last vertices of each cross-section)
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            int firstVertexIdx = i * widthResolution;
+            int lastVertexIdx = i * widthResolution + (widthResolution - 1);
+            if (firstVertexIdx < riverVertices.Length && lastVertexIdx < riverVertices.Length)
+            {
+                originalLeftBank[i] = riverVertices[firstVertexIdx];
+                originalRightBank[i] = riverVertices[lastVertexIdx];
+                
+                // Validate positions (check for NaN or invalid values)
+                if (float.IsNaN(originalLeftBank[i].x) || float.IsNaN(originalRightBank[i].x) ||
+                    float.IsInfinity(originalLeftBank[i].x) || float.IsInfinity(originalRightBank[i].x))
+                {
+                    continue;
+                }
+                hasValidBankPositions = true;
+            }
+        }
+        
+        // If we don't have valid bank positions, skip horizontal migration
+        if (!hasValidBankPositions)
+        {
+            Debug.LogWarning("[SimulationController] Cannot update horizontal positions - invalid bank positions detected");
+        }
+        
         // Update vertices and colors with erosion data
         for (int i = 0; i < numCrossSections; i++)
         {
+            // Get current bank edges from solver
+            (int leftBankEdge, int rightBankEdge) = riverMeshSolver.GetBankEdges(i);
+            
+            // Get original bank positions for this cross-section
+            Vector3 leftBankPos = originalLeftBank[i];
+            Vector3 rightBankPos = originalRightBank[i];
+            
+            // Calculate center point and direction for this cross-section
+            Vector3 centerPos = (leftBankPos + rightBankPos) * 0.5f;
+            Vector3 bankDirection = rightBankPos - leftBankPos;
+            float originalFullWidth = bankDirection.magnitude;
+            
+            // Determine current fluid region
+            int originalFluidStart = 1; // Assuming original banks were at edges
+            int originalFluidEnd = widthResolution - 2;
+            int originalFluidWidth = Mathf.Max(1, originalFluidEnd - originalFluidStart + 1);
+            
             for (int w = 0; w < widthResolution; w++)
             {
                 int vertexIdx = i * widthResolution + w;
                 if (vertexIdx >= riverVertices.Length) continue;
                 
                 Vector3 vertex = riverVertices[vertexIdx];
+                Vector3 newPosition = vertex;
+                
+                // Only apply horizontal migration if enabled and we have valid bank positions and edges
+                if (EnableHorizontalBankMigration && hasValidBankPositions && leftBankEdge >= 0 && rightBankEdge >= 0 && leftBankEdge < rightBankEdge)
+                {
+                    // Calculate current fluid region
+                    int currentFluidStart = leftBankEdge + 1;
+                    int currentFluidEnd = rightBankEdge - 1;
+                    int currentFluidWidth = Mathf.Max(1, currentFluidEnd - currentFluidStart + 1);
+                    
+                    // Calculate where the current bank edges are in world space
+                    // Map bank edge indices to normalized positions (0 = leftmost, 1 = rightmost)
+                    float leftEdgeNormalized = (float)leftBankEdge / (float)(widthResolution - 1);
+                    float rightEdgeNormalized = (float)rightBankEdge / (float)(widthResolution - 1);
+                    
+                    // Calculate world-space positions of current bank edges
+                    Vector3 currentLeftEdgePos = Vector3.Lerp(leftBankPos, rightBankPos, leftEdgeNormalized);
+                    Vector3 currentRightEdgePos = Vector3.Lerp(leftBankPos, rightBankPos, rightEdgeNormalized);
+                    
+                    // Validate calculated positions
+                    if (float.IsNaN(currentLeftEdgePos.x) || float.IsNaN(currentRightEdgePos.x) ||
+                        float.IsInfinity(currentLeftEdgePos.x) || float.IsInfinity(currentRightEdgePos.x))
+                    {
+                        // Fallback to original interpolation if calculated positions are invalid
+                        float normalizedWidth = (float)w / (float)(widthResolution - 1);
+                        newPosition = Vector3.Lerp(leftBankPos, rightBankPos, normalizedWidth);
+                    }
+                    else
+                    {
+                        // Map vertex width index to normalized position
+                        float wNormalized = (float)w / (float)(widthResolution - 1);
+                        
+                        if (w <= leftBankEdge)
+                        {
+                            // Vertex is in left bank region - interpolate between original left and current left edge
+                            float t = (leftBankEdge > 0) ? (float)w / (float)leftBankEdge : 0f;
+                            newPosition = Vector3.Lerp(leftBankPos, currentLeftEdgePos, t);
+                        }
+                        else if (w >= rightBankEdge)
+                        {
+                            // Vertex is in right bank region - interpolate between current right edge and original right
+                            float t = (widthResolution - 1 - rightBankEdge > 0) ? 
+                                (float)(w - rightBankEdge) / (float)(widthResolution - 1 - rightBankEdge) : 0f;
+                            newPosition = Vector3.Lerp(currentRightEdgePos, rightBankPos, t);
+                        }
+                        else
+                        {
+                            // Vertex is in fluid region - interpolate between current bank edges
+                            float t = (currentFluidWidth > 1) ? 
+                                (float)(w - currentFluidStart) / (float)(currentFluidWidth - 1) : 0.5f;
+                            newPosition = Vector3.Lerp(currentLeftEdgePos, currentRightEdgePos, t);
+                        }
+                        
+                        // Final validation
+                        if (float.IsNaN(newPosition.x) || float.IsInfinity(newPosition.x))
+                        {
+                            // Fallback to original position if new position is invalid
+                            newPosition = vertex;
+                        }
+                    }
+                }
+                else
+                {
+                    // No valid bank edges found or invalid bank positions - use original interpolation across full width
+                    // This preserves the original mesh appearance
+                    float normalizedWidth = (float)w / (float)(widthResolution - 1);
+                    newPosition = Vector3.Lerp(leftBankPos, rightBankPos, normalizedWidth);
+                    
+                    // Validate the interpolated position
+                    if (float.IsNaN(newPosition.x) || float.IsInfinity(newPosition.x))
+                    {
+                        // Keep original vertex position if interpolation fails
+                        newPosition = vertex;
+                    }
+                }
                 
                 // Update elevation from bed elevation
                 float bedElevation = (float)riverMeshSolver.h[i, w] * RiverGeometryElevationScale;
-                riverVertices[vertexIdx] = new Vector3(vertex.x, bedElevation, vertex.z);
+                riverVertices[vertexIdx] = new Vector3(newPosition.x, bedElevation, newPosition.z);
                 
                 // Get erosion rate (negative = erosion, positive = deposition)
                 double erosionRate = riverMeshSolver.GetErosionRate(i, w);

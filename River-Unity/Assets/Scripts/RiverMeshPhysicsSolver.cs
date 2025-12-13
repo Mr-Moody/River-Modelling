@@ -19,7 +19,18 @@ public class RiverMeshPhysicsSolver
     public readonly double sedimentDensity;
     public readonly double porosity;
     public readonly double criticalShear;
-    public readonly double transportCoefficient;
+    private readonly double _baseTransportCoefficient;
+    public double transportCoefficient
+    {
+        get
+        {
+            if (MonteCarloParameters.UseMonteCarloTransportCoefficient)
+            {
+                return MonteCarloParameters.CurrentTransportCoefficient;
+            }
+            return _baseTransportCoefficient;
+        }
+    }
     public readonly double bankCriticalShear;
     public readonly double bankErosionRate;
     
@@ -56,7 +67,7 @@ public class RiverMeshPhysicsSolver
         this.sedimentDensity = sedimentDensity;
         this.porosity = porosity;
         this.criticalShear = criticalShear;
-        this.transportCoefficient = transportCoefficient;
+        this._baseTransportCoefficient = transportCoefficient;
         this.bankCriticalShear = bankCriticalShear;
         this.bankErosionRate = bankErosionRate;
         

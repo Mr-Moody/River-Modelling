@@ -153,3 +153,4 @@ coverage.xml
 docs/_build/
 
 .vscode/
+River-Unity/Results/.DS_Store

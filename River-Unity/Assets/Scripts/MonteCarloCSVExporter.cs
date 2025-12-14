@@ -12,7 +12,7 @@ public static class MonteCarloCSVExporter
     /// <summary>
     /// Creates a results folder with timestamp in the specified base path.
     /// </summary>
-    /// <param name="basePath">Base path for results folder. If empty, uses Application.persistentDataPath.</param>
+    /// <param name="basePath">Base path for results folder. If empty, defaults to E:\UCL\River-Modelling\River-Unity\Results.</param>
     /// <returns>Full path to the created results folder.</returns>
     public static string CreateResultsFolder(string basePath = "")
     {
@@ -20,7 +20,15 @@ public static class MonteCarloCSVExporter
         {
             if (string.IsNullOrEmpty(basePath))
             {
-                basePath = Application.persistentDataPath;
+                // Default to E:\UCL\River-Modelling\River-Unity\Results
+                basePath = @"E:\UCL\River-Modelling\River-Unity\Results";
+            }
+            
+            // Ensure base directory exists
+            if (!Directory.Exists(basePath))
+            {
+                Directory.CreateDirectory(basePath);
+                Debug.Log($"[MonteCarloCSVExporter] Created base results directory: {basePath}");
             }
             
             // Create folder name with timestamp

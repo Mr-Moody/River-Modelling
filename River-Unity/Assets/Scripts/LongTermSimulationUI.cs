@@ -228,7 +228,18 @@ public class LongTermSimulationUI : MonoBehaviour
             {
                 timeStepDropdown.options.Add(new Dropdown.OptionData($"{i} day{(i > 1 ? "s" : "")}"));
             }
-            timeStepDropdown.value = 0; // Default to 1 day
+            // Initialize dropdown to match controller's current value (from editor)
+            if (simulationController != null)
+            {
+                // Clamp value to valid range (1-7) and convert to 0-indexed
+                int editorValue = Mathf.Clamp(simulationController.timeStepDays, 1, 7);
+                timeStepDropdown.value = editorValue - 1; // Convert to 0-indexed
+                Debug.Log($"[LongTermSimulationUI] Initialized time step dropdown to match editor value: {editorValue} day(s)");
+            }
+            else
+            {
+                timeStepDropdown.value = 0; // Default to 1 day if no controller
+            }
             timeStepDropdown.onValueChanged.RemoveAllListeners();
             timeStepDropdown.onValueChanged.AddListener(OnTimeStepChanged);
         }
@@ -267,15 +278,25 @@ public class LongTermSimulationUI : MonoBehaviour
         
         Debug.Log($"[LongTermSimulationUI] SimulationController found: {simulationController.name}");
         
-        // Update time step from dropdown
+        // Use the current timeStepDays value from the controller (set in editor or via dropdown)
+        // Only update from dropdown if it was explicitly changed by the user
         if (timeStepDropdown != null)
         {
-            simulationController.timeStepDays = timeStepDropdown.value + 1; // 0-indexed to 1-7
-            Debug.Log($"[LongTermSimulationUI] Time step set to: {simulationController.timeStepDays} day(s)");
+            int dropdownValue = timeStepDropdown.value + 1; // 0-indexed to 1-7
+            // Only update if dropdown value differs from controller value (user changed it)
+            if (dropdownValue != simulationController.timeStepDays)
+            {
+                simulationController.timeStepDays = dropdownValue;
+                Debug.Log($"[LongTermSimulationUI] Time step updated from dropdown to: {simulationController.timeStepDays} day(s)");
+            }
+            else
+            {
+                Debug.Log($"[LongTermSimulationUI] Using time step from editor: {simulationController.timeStepDays} day(s)");
+            }
         }
         else
         {
-            Debug.LogWarning("[LongTermSimulationUI] Time step dropdown is null, using default value");
+            Debug.Log($"[LongTermSimulationUI] Time step dropdown is null, using editor value: {simulationController.timeStepDays} day(s)");
         }
         
         // Start simulation

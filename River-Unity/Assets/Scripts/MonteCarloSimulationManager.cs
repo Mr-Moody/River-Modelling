@@ -91,7 +91,7 @@ public class MonteCarloSimulationManager : MonoBehaviour
     [Tooltip("Automatically export results to CSV files when ensemble completes")]
     public bool autoExportResults = true;
     
-    [Tooltip("Base path for export folder (empty = use Application.persistentDataPath)")]
+    [Tooltip("Base path for export folder (empty = use E:\\UCL\\River-Modelling\\River-Unity\\Results)")]
     public string exportBasePath = "";
     
     [Tooltip("Export full field data to CSV files (requires storeFullEnsemble=true or will enable it automatically)")]

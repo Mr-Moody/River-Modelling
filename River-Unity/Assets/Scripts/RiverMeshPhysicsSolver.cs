@@ -1667,6 +1667,68 @@ public class RiverMeshPhysicsSolver
             vertices[rightBankIdx].y = rightBankPos.y;
         }
         
+        // Fourth pass: Smooth bank vertex positions along river length for continuous lines
+        // This creates smooth, continuous bank lines instead of discrete cross-sections
+        Vector3[] leftBankPositions = new Vector3[numCrossSections];
+        Vector3[] rightBankPositions = new Vector3[numCrossSections];
+        
+        // Collect bank positions
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            leftBankPositions[i] = vertices[i * widthResolution];
+            rightBankPositions[i] = vertices[i * widthResolution + (widthResolution - 1)];
+        }
+        
+        // Smooth left bank positions along river length
+        Vector3[] smoothedLeftBanks = SmoothBankPositions(leftBankPositions);
+        // Smooth right bank positions along river length
+        Vector3[] smoothedRightBanks = SmoothBankPositions(rightBankPositions);
+        
+        // Update bank vertices with smoothed positions
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            int leftBankIdx = i * widthResolution;
+            int rightBankIdx = i * widthResolution + (widthResolution - 1);
+            
+            // Preserve elevation from original position, only smooth horizontal (X, Z)
+            Vector3 smoothedLeft = smoothedLeftBanks[i];
+            Vector3 smoothedRight = smoothedRightBanks[i];
+            smoothedLeft.y = leftBankPositions[i].y; // Preserve elevation
+            smoothedRight.y = rightBankPositions[i].y; // Preserve elevation
+            
+            vertices[leftBankIdx] = smoothedLeft;
+            vertices[rightBankIdx] = smoothedRight;
+        }
+        
+        // Recalculate intermediate vertices proportionally after bank smoothing
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            int leftBankIdx = i * widthResolution;
+            int rightBankIdx = i * widthResolution + (widthResolution - 1);
+            
+            Vector3 leftBankPos = vertices[leftBankIdx];
+            Vector3 rightBankPos = vertices[rightBankIdx];
+            
+            // Update all intermediate vertices proportionally
+            for (int w = 1; w < widthResolution - 1; w++)
+            {
+                // Normalized position across width (0 = left bank, 1 = right bank)
+                float normalizedPos = (float)w / (float)(widthResolution - 1);
+                
+                // Interpolate new position between smoothed bank positions
+                Vector3 newPos = Vector3.Lerp(leftBankPos, rightBankPos, normalizedPos);
+                
+                // Preserve the elevation (Y coordinate) from current position
+                int vertexIdx = i * widthResolution + w;
+                if (vertexIdx < vertices.Length)
+                {
+                    float currentElevation = vertices[vertexIdx].y;
+                    newPos.y = currentElevation; // Keep elevation, only change horizontal position
+                    vertices[vertexIdx] = newPos;
+                }
+            }
+        }
+        
         // Update spacing and coordinate system after vertex changes
         CalculateSpacing(vertices);
         _coordinateSystem = new RiverCoordinateSystem(vertices, numCrossSections, widthResolution);
@@ -1701,6 +1763,93 @@ public class RiverMeshPhysicsSolver
         }
     }
     
+    /// <summary>
+    /// Smooths bank vertex positions along the river length (s-direction) to create continuous smooth bank lines.
+    /// Uses a 5-point smoothing kernel with weighted neighbors.
+    /// </summary>
+    /// <param name="bankPositions">Array of bank vertex positions along the river</param>
+    /// <returns>Array of smoothed bank positions</returns>
+    private Vector3[] SmoothBankPositions(Vector3[] bankPositions)
+    {
+        if (bankPositions == null || bankPositions.Length == 0)
+            return bankPositions;
+        
+        Vector3[] smoothed = new Vector3[bankPositions.Length];
+        
+        // 5-point smoothing kernel: 40% current, 20% each immediate neighbor (i±1), 10% each extended neighbor (i±2)
+        float centerWeight = 0.4f;
+        float immediateNeighborWeight = 0.2f;
+        float extendedNeighborWeight = 0.1f;
+        
+        for (int i = 0; i < bankPositions.Length; i++)
+        {
+            Vector3 smoothedPos = bankPositions[i] * centerWeight;
+            
+            // Add contribution from immediate upstream neighbor (i-1)
+            if (i > 0)
+            {
+                smoothedPos += bankPositions[i - 1] * immediateNeighborWeight;
+            }
+            else
+            {
+                // At boundary, use current value
+                smoothedPos += bankPositions[i] * immediateNeighborWeight;
+            }
+            
+            // Add contribution from immediate downstream neighbor (i+1)
+            if (i < bankPositions.Length - 1)
+            {
+                smoothedPos += bankPositions[i + 1] * immediateNeighborWeight;
+            }
+            else
+            {
+                // At boundary, use current value
+                smoothedPos += bankPositions[i] * immediateNeighborWeight;
+            }
+            
+            // Add contribution from extended upstream neighbor (i-2)
+            if (i > 1)
+            {
+                smoothedPos += bankPositions[i - 2] * extendedNeighborWeight;
+            }
+            else if (i > 0)
+            {
+                // Use i-1 if i-2 doesn't exist
+                smoothedPos += bankPositions[i - 1] * extendedNeighborWeight;
+            }
+            else
+            {
+                // At boundary, use current value
+                smoothedPos += bankPositions[i] * extendedNeighborWeight;
+            }
+            
+            // Add contribution from extended downstream neighbor (i+2)
+            if (i < bankPositions.Length - 2)
+            {
+                smoothedPos += bankPositions[i + 2] * extendedNeighborWeight;
+            }
+            else if (i < bankPositions.Length - 1)
+            {
+                // Use i+1 if i+2 doesn't exist
+                smoothedPos += bankPositions[i + 1] * extendedNeighborWeight;
+            }
+            else
+            {
+                // At boundary, use current value
+                smoothedPos += bankPositions[i] * extendedNeighborWeight;
+            }
+            
+            smoothed[i] = smoothedPos;
+        }
+        
+        return smoothed;
+    }
+    
+    /// <summary>
+    /// Processes bank migration by converting FLUID cells to BANK cells when cumulative erosion exceeds threshold.
+    /// This simulates banks eroding and the river channel narrowing over time.
+    /// The bank edge moves inward as adjacent FLUID cells are converted to BANK.
+    /// </summary>
     /// <summary>
     /// Processes bank migration by converting FLUID cells to BANK cells when cumulative erosion exceeds threshold.
     /// This simulates banks eroding and the river channel narrowing over time.

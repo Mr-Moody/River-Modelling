@@ -315,7 +315,13 @@ public class SimulationController : MonoBehaviour
 
         int numCrossSections = totalVertices / widthRes;
         
+        // Get scale factor from geometry loader (converts meters to Unity units)
+        // Calculate unity to meters conversion: unityToMeters = 1.0 / scaleFactor
+        float scaleFactor = geometryLoader.scaleFactor;
+        double unityToMetersScale = (scaleFactor > 0.0f) ? (1.0 / (double)scaleFactor) : 2000.0;
+        
         Debug.Log($"[SimulationController] Step 1: Creating RiverMeshPhysicsSolver for {numCrossSections} cross-sections x {widthRes} width points...");
+        Debug.Log($"[SimulationController] Unit conversion: scaleFactor={scaleFactor}, unityToMetersScale={unityToMetersScale}");
         
         riverMeshSolver = new RiverMeshPhysicsSolver(
             vertices, numCrossSections, widthRes,
@@ -325,11 +331,15 @@ public class SimulationController : MonoBehaviour
             criticalShear: CriticalShear,
             transportCoefficient: TransportCoefficient,
             bankCriticalShear: BankCriticalShear,
-            bankErosionRate: BankErosionRate
+            bankErosionRate: BankErosionRate,
+            unityToMetersScale: unityToMetersScale
         );
 
         // Update cell types based on geometry
         riverMeshSolver.UpdateCellTypes(vertices);
+        
+        // Initialize bed elevation from mesh Y coordinates
+        riverMeshSolver.InitializeBedElevationFromMesh(vertices);
         
         // Set bank migration threshold (controls how fast banks move)
         riverMeshSolver.bankMigrationThreshold = BankMigrationThreshold;
@@ -670,9 +680,17 @@ public class SimulationController : MonoBehaviour
                     }
                 }
                 
-                // Update elevation from bed elevation
-                float bedElevation = (float)riverMeshSolver.h[i, w] * RiverGeometryElevationScale;
-                riverVertices[vertexIdx] = new Vector3(newPosition.x, bedElevation, newPosition.z);
+                // Update elevation from bed elevation (h represents changes from initial state, in meters)
+                // Convert meters to Unity units for visualization
+                // Apply: finalElevation = (initialElevationMeters + hMeters) * metersToUnityScale * visualizationScale
+                double initialElevationMeters = riverMeshSolver.GetInitialBedElevation(i, w);
+                double bedElevationChangeMeters = riverMeshSolver.h[i, w];
+                double totalElevationMeters = initialElevationMeters + bedElevationChangeMeters;
+                
+                // Convert meters to Unity units
+                double metersToUnityScale = riverMeshSolver.GetMetersToUnityScale();
+                float finalElevation = (float)(totalElevationMeters * metersToUnityScale * RiverGeometryElevationScale);
+                riverVertices[vertexIdx] = new Vector3(newPosition.x, finalElevation, newPosition.z);
                 
                 // Get erosion rate (negative = erosion, positive = deposition)
                 double erosionRate = riverMeshSolver.GetErosionRate(i, w);
@@ -781,9 +799,17 @@ public class SimulationController : MonoBehaviour
                 
                 Vector3 vertex = riverVertices[vertexIdx];
                 
-                // Update elevation from bed elevation
-                float bedElevation = (float)riverMeshSolver.h[i, w] * RiverGeometryElevationScale;
-                riverVertices[vertexIdx] = new Vector3(vertex.x, bedElevation, vertex.z);
+                // Update elevation from bed elevation (h represents changes from initial state, in meters)
+                // Convert meters to Unity units for visualization
+                // Apply: finalElevation = (initialElevationMeters + hMeters) * metersToUnityScale * visualizationScale
+                double initialElevationMeters = riverMeshSolver.GetInitialBedElevation(i, w);
+                double bedElevationChangeMeters = riverMeshSolver.h[i, w];
+                double totalElevationMeters = initialElevationMeters + bedElevationChangeMeters;
+                
+                // Convert meters to Unity units
+                double metersToUnityScale = riverMeshSolver.GetMetersToUnityScale();
+                float finalElevation = (float)(totalElevationMeters * metersToUnityScale * RiverGeometryElevationScale);
+                riverVertices[vertexIdx] = new Vector3(vertex.x, finalElevation, vertex.z);
                 
                 // Get velocity magnitude (u along river, v across river)
                 double vel = riverMeshSolver.GetVelocityMagnitude(i, w);
@@ -985,5 +1011,24 @@ public class SimulationController : MonoBehaviour
     public RiverMeshPhysicsSolver GetSolver()
     {
         return riverMeshSolver;
+    }
+    
+    /// <summary>
+    /// Forces an update of the river geometry mesh visualization.
+    /// Useful when running physics steps externally (e.g., in LongTermSimulationController).
+    /// </summary>
+    public void ForceMeshUpdate()
+    {
+        if (UpdateRiverGeometry && riverMeshSolver != null)
+        {
+            if (visualizationMode == VisualizationMode.Erosion)
+            {
+                UpdateRiverGeometryMeshWithErosion();
+            }
+            else
+            {
+                UpdateRiverGeometryMesh();
+            }
+        }
     }
 }

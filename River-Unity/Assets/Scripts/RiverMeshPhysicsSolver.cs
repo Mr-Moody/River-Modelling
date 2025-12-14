@@ -38,9 +38,15 @@ public class RiverMeshPhysicsSolver
     // Arrays indexed as: [crossSectionIndex, widthIndex]
     public double[,] u;              // Velocity along river (longitudinal)
     public double[,] v;              // Velocity across river (transverse)
-    public double[,] h;              // Bed elevation
+    public double[,] h;              // Bed elevation (changes from initial state)
     public double[,] waterDepth;    // Water depth
     public int[,] cellType;         // Cell type (FLUID, BANK, TERRAIN)
+    
+    // Initial bed elevation (stored separately to apply changes relative to initial state)
+    private double[,] initialBedElevation;
+    
+    // Unit conversion: Unity units to meters (1 / scaleFactor, where scaleFactor converts meters to Unity)
+    private double unityToMetersScale;
     
     // Bank migration tracking
     private double[,] cumulativeBankErosion;  // Cumulative erosion at bank cells (for migration)
@@ -57,7 +63,8 @@ public class RiverMeshPhysicsSolver
                                   double nu = 1e-6, double rho = 1000.0, double g = 9.81,
                                   double sedimentDensity = 2650.0, double porosity = 0.4,
                                   double criticalShear = 0.05, double transportCoefficient = 0.1,
-                                  double bankCriticalShear = 0.15, double bankErosionRate = 0.3)
+                                  double bankCriticalShear = 0.15, double bankErosionRate = 0.3,
+                                  double unityToMetersScale = 2000.0)
     {
         this.numCrossSections = numCrossSections;
         this.widthResolution = widthResolution;
@@ -70,6 +77,7 @@ public class RiverMeshPhysicsSolver
         this._baseTransportCoefficient = transportCoefficient;
         this.bankCriticalShear = bankCriticalShear;
         this.bankErosionRate = bankErosionRate;
+        this.unityToMetersScale = unityToMetersScale;
         
         // Initialize coordinate system
         coordinateSystem = new RiverCoordinateSystem(riverVertices, numCrossSections, widthResolution);
@@ -104,6 +112,7 @@ public class RiverMeshPhysicsSolver
     
     /// <summary>
     /// Calculates spacing between cross-sections (ds) and across each cross-section (dw).
+    /// Converts from Unity units to meters for physics calculations.
     /// </summary>
     private void CalculateSpacing(Vector3[] vertices)
     {
@@ -118,7 +127,9 @@ public class RiverMeshPhysicsSolver
             int nextRightIdx = (i + 1) * widthResolution + (widthResolution - 1);
             Vector3 nextCenter = (vertices[nextLeftIdx] + vertices[nextRightIdx]) * 0.5f;
             
-            ds[i] = Vector3.Distance(currCenter, nextCenter);
+            // Convert Unity units to meters
+            double distanceUnity = Vector3.Distance(currCenter, nextCenter);
+            ds[i] = distanceUnity * unityToMetersScale;
         }
         // Last cross-section uses previous spacing
         if (numCrossSections > 1)
@@ -127,7 +138,7 @@ public class RiverMeshPhysicsSolver
         }
         else
         {
-            ds[0] = 1.0; // Default
+            ds[0] = 1.0 * unityToMetersScale; // Default in meters
         }
         
         // Calculate dw (width across river at each cross-section)
@@ -135,8 +146,10 @@ public class RiverMeshPhysicsSolver
         {
             int leftIdx = i * widthResolution;
             int rightIdx = i * widthResolution + (widthResolution - 1);
-            double width = Vector3.Distance(vertices[leftIdx], vertices[rightIdx]);
-            dw[i] = width / (widthResolution - 1); // Average spacing across width
+            // Convert Unity units to meters
+            double widthUnity = Vector3.Distance(vertices[leftIdx], vertices[rightIdx]);
+            double widthMeters = widthUnity * unityToMetersScale;
+            dw[i] = widthMeters / (widthResolution - 1); // Average spacing across width in meters
         }
     }
     
@@ -183,6 +196,58 @@ public class RiverMeshPhysicsSolver
     }
     
     /// <summary>
+    /// Initializes bed elevation h from mesh vertex Y coordinates.
+    /// Converts Unity units to meters and stores initial elevations separately.
+    /// Sets h to 0 (changes from initial state, in meters).
+    /// </summary>
+    public void InitializeBedElevationFromMesh(Vector3[] vertices)
+    {
+        // Initialize the initialBedElevation array
+        initialBedElevation = new double[numCrossSections, widthResolution];
+        
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                int vertexIdx = i * widthResolution + w;
+                if (vertexIdx < vertices.Length)
+                {
+                    // Convert Unity Y coordinate to meters and store initial elevation
+                    double unityY = vertices[vertexIdx].y;
+                    initialBedElevation[i, w] = unityY * unityToMetersScale;
+                    // Initialize h to 0 (bed elevation changes start at zero, in meters)
+                    h[i, w] = 0.0;
+                }
+                else
+                {
+                    initialBedElevation[i, w] = 0.0;
+                    h[i, w] = 0.0;
+                }
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Gets the initial bed elevation at the specified cross-section and width index (in meters).
+    /// </summary>
+    public double GetInitialBedElevation(int i, int w)
+    {
+        if (initialBedElevation != null && i >= 0 && i < numCrossSections && w >= 0 && w < widthResolution)
+        {
+            return initialBedElevation[i, w];
+        }
+        return 0.0;
+    }
+    
+    /// <summary>
+    /// Gets the scale factor to convert meters to Unity units (1 / unityToMetersScale).
+    /// </summary>
+    public double GetMetersToUnityScale()
+    {
+        return (unityToMetersScale > 0.0) ? (1.0 / unityToMetersScale) : 0.0005;
+    }
+    
+    /// <summary>
     /// Performs one Navier-Stokes time step using river-local coordinates.
     /// </summary>
     public void NavierStokesStep(float dt)
@@ -191,12 +256,16 @@ public class RiverMeshPhysicsSolver
         double[,] vNew = (double[,])v.Clone();
         
         // Calculate water surface elevation
+        // h represents changes from initial, so actual bed elevation = initialBedElevation + h
         double[,] waterSurface = new double[numCrossSections, widthResolution];
         for (int i = 0; i < numCrossSections; i++)
         {
             for (int w = 0; w < widthResolution; w++)
             {
-                waterSurface[i, w] = h[i, w] + waterDepth[i, w];
+                double actualBedElevation = (initialBedElevation != null) 
+                    ? initialBedElevation[i, w] + h[i, w] 
+                    : h[i, w]; // Fallback if initialBedElevation not initialized
+                waterSurface[i, w] = actualBedElevation + waterDepth[i, w];
             }
         }
         
@@ -765,7 +834,7 @@ public class RiverMeshPhysicsSolver
     {
         double[,] h_new = (double[,])h.Clone();
         double porosityFactor = 1.0 / (1.0 - porosity);
-        double max_change_rate = 0.02;
+        double max_change_rate = 0.001; // Reduced from 0.02 for more realistic, gradual bed evolution
         
         // Compute shear stress and bank erosion
         double[,] tau = ComputeShearStress();
@@ -857,8 +926,14 @@ public class RiverMeshPhysicsSolver
                 
                 h_new[i, w] = h[i, w] + h_change;
                 
-                // Final safety clip
-                h_new[i, w] = Math.Max(-10.0, Math.Min(10.0, h_new[i, w]));
+                // Final safety clip - limit total change from initial elevation to prevent unbounded growth
+                // Since h represents changes from initial state (starts at 0), limit h_new to ±maxDeviation
+                double maxDeviation = 2.0; // Maximum change from initial elevation (in solver units)
+                if (Math.Abs(h_new[i, w]) > maxDeviation)
+                {
+                    // Clamp h_new to ±maxDeviation (since h is the change from initial)
+                    h_new[i, w] = Math.Sign(h_new[i, w]) * maxDeviation;
+                }
             }
         }
         

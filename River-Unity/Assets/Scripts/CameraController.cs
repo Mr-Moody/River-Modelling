@@ -22,6 +22,8 @@ public class CameraController : MonoBehaviour
     private SimulationController simulationController;
     private bool simulationToggleKeyPressed = false;
     
+    private bool cursorMode = false; // When true, cursor is unlocked and camera movement is disabled
+    
     void Start()
     {
         // Lock cursor to center for mouse look
@@ -41,69 +43,108 @@ public class CameraController : MonoBehaviour
 
     void Update()
     {
+        HandleCursorMode();
         HandleMouseLook();
         HandleMovement();
         HandleSimulationToggle();
     }
     
-    void HandleMouseLook()
+    void HandleCursorMode()
     {
-        // Get mouse input
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
+        // Toggle cursor mode with C key
+        if (Input.GetKeyDown(KeyCode.C))
+        {
+            cursorMode = !cursorMode;
+            
+            if (cursorMode)
+            {
+                // Enable cursor mode: unlock cursor and make it visible
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+            }
+            else
+            {
+                // Disable cursor mode: lock cursor and hide it
+                if (lockCursor)
+                {
+                    Cursor.lockState = CursorLockMode.Locked;
+                    Cursor.visible = false;
+                }
+            }
+        }
         
-        // Rotate camera based on mouse movement
-        rotationY += mouseX;
-        rotationX -= mouseY;
-        
-        // Clamp vertical rotation to prevent flipping
-        rotationX = Mathf.Clamp(rotationX, -90f, 90f);
-        
-        // Apply rotation
-        transform.localRotation = Quaternion.Euler(rotationX, rotationY, 0f);
-        
-        // Unlock cursor with Escape key
+        // Also allow Escape to toggle cursor (existing functionality)
         if (Input.GetKeyDown(KeyCode.Escape))
         {
-            if (Cursor.lockState == CursorLockMode.Locked)
+            cursorMode = !cursorMode;
+            
+            if (cursorMode)
             {
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
             }
             else
             {
-                Cursor.lockState = CursorLockMode.Locked;
-                Cursor.visible = false;
+                if (lockCursor)
+                {
+                    Cursor.lockState = CursorLockMode.Locked;
+                    Cursor.visible = false;
+                }
             }
+        }
+    }
+    
+    void HandleMouseLook()
+    {
+        // Only rotate if cursor is locked (not in cursor mode)
+        if (Cursor.lockState == CursorLockMode.Locked)
+        {
+            // Get mouse input
+            float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
+            float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
+            
+            // Rotate camera based on mouse movement
+            rotationY += mouseX;
+            rotationX -= mouseY;
+            
+            // Clamp vertical rotation to prevent flipping
+            rotationX = Mathf.Clamp(rotationX, -90f, 90f);
+            
+            // Apply rotation
+            transform.localRotation = Quaternion.Euler(rotationX, rotationY, 0f);
         }
     }
     
     void HandleMovement()
     {
-        // Get movement input
-        float horizontal = Input.GetAxis("Horizontal"); // A/D keys
-        float vertical = Input.GetAxis("Vertical");     // W/S keys
-        
-        // Calculate movement direction relative to camera's local rotation
-        Vector3 forward = transform.forward;
-        Vector3 right = transform.right;
-        Vector3 up = transform.up;
-        
-        // Calculate movement in camera's local space (all relative to facing direction)
-        Vector3 movement = (forward * vertical + right * horizontal) * moveSpeed;
-        
-        // Vertical movement relative to camera's up direction (Space = camera up, Shift = camera down)
-        if (Input.GetKey(KeyCode.Space))
+        // Only move if cursor is locked (not in cursor mode)
+        if (Cursor.lockState == CursorLockMode.Locked)
         {
-            movement += up * verticalMoveSpeed;
+            // Get movement input
+            float horizontal = Input.GetAxis("Horizontal"); // A/D keys
+            float vertical = Input.GetAxis("Vertical");     // W/S keys
+            
+            // Calculate movement direction relative to camera's local rotation
+            Vector3 forward = transform.forward;
+            Vector3 right = transform.right;
+            Vector3 up = transform.up;
+            
+            // Calculate movement in camera's local space (all relative to facing direction)
+            Vector3 movement = (forward * vertical + right * horizontal) * moveSpeed;
+            
+            // Vertical movement relative to camera's up direction (Space = camera up, Shift = camera down)
+            if (Input.GetKey(KeyCode.Space))
+            {
+                movement += up * verticalMoveSpeed;
+            }
+            else if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+            {
+                movement += -up * verticalMoveSpeed;
+            }
+            
+            // Apply movement relative to camera position
+            transform.position += movement * Time.deltaTime;
         }
-        else if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
-        {
-            movement += -up * verticalMoveSpeed;
-        }
-        
-        // Apply movement relative to camera position
-        transform.position += movement * Time.deltaTime;
     }
     
     void HandleSimulationToggle()

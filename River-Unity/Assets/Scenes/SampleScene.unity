@@ -149,7 +149,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   simulationController: {fileID: 714013514}
-  timeStepDays: 1
+  timeStepDays: 7
   simulationYears: 30
   autoExportOnComplete: 1
   exportFileName: RiverSimulation_2017
@@ -2127,9 +2127,10 @@ MonoBehaviour:
   Porosity: 0.4
   CriticalShear: 0.05
   TransportCoefficient: 0.1
-  BankCriticalShear: 0.0001
-  BankErosionRate: 30
-  BankMigrationThreshold: 0.0001
+  BankCriticalShear: 1
+  BankErosionRate: 0.001
+  BankMigrationThreshold: 0.001
+  widthVelocityFeedbackStrength: 1
   AutoExportMeshOnStop: 1
   MeshExportFileName: RiverMeshOutput.csv
 --- !u!4 &714013515
@@ -5024,6 +5025,51 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1792974822}
   m_CullTransparentMesh: 1
+--- !u!1 &1831028644
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1831028646}
+  - component: {fileID: 1831028645}
+  m_Layer: 0
+  m_Name: BankMigration
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1831028645
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1831028644}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bb25e52da2a5f194782f2e42982a6a73, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  simulationController: {fileID: 714013514}
+--- !u!4 &1831028646
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1831028644}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 28.67982, y: -9.99999, z: 9.08206}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1835349710
 GameObject:
   m_ObjectHideFlags: 0
@@ -5353,3 +5399,4 @@ SceneRoots:
   - {fileID: 47219058}
   - {fileID: 64224925}
   - {fileID: 1363429437}
+  - {fileID: 1831028646}

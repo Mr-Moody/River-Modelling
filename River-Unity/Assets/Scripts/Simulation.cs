@@ -66,26 +66,60 @@ public class SimulationController : MonoBehaviour
     public double SedimentDensity = 2650.0;
     public double Porosity = 0.4;
     public double CriticalShear = 0.05;
-    public double TransportCoefficient = 0.1;
+    [Tooltip("Sediment transport coefficient. Higher values = more sediment movement and erosion. Recommended: 0.1-0.5 for faster meandering")]
+    public double TransportCoefficient = 0.3;  // Increased for more sediment transport and faster erosion
     
     [Header("Bank Erosion Parameters")]
-    [Tooltip("Critical shear stress for bank erosion. Lower values = easier to erode (faster migration). Recommended: 0.05-0.15")]
-    public double BankCriticalShear = 0.05;  // Lowered from 0.15 for faster erosion
+    [Tooltip("Critical shear stress for bank erosion. Lower values = easier to erode (faster migration). Recommended: 0.01-0.15")]
+    public double BankCriticalShear = 0.02;  // Lowered for faster erosion - banks erode more easily
     
-    [Tooltip("Bank erosion rate multiplier. Higher values = faster bank erosion and migration. Recommended: 1.0-5.0 for visible migration")]
-    public double BankErosionRate = 2.0;  // Increased from 0.3 for faster migration
+    [Tooltip("Bank erosion rate multiplier. Higher values = faster bank erosion and migration. Recommended: 1.0-10.0 for visible migration")]
+    public double BankErosionRate = 5.0;  // Increased for faster migration - banks erode much faster
     
-    [Tooltip("Erosion threshold before bank migrates (meters). Lower = faster migration. Recommended: 0.001-0.01")]
-    public double BankMigrationThreshold = 0.005;  // Lower = migrates more frequently
+    [Tooltip("Erosion threshold before bank migrates (meters). Lower = faster migration. Recommended: 0.0001-0.01")]
+    public double BankMigrationThreshold = 0.001;  // Lower = migrates more frequently - banks move with less erosion
+    
+    [Header("Width-Velocity Feedback")]
+    [Tooltip("Strength of velocity reduction when channel widens (0.0 = disabled, 1.0 = full inverse relationship). Higher values create stronger negative feedback to prevent runaway growth.")]
+    [Range(0.0f, 1.0f)]
+    public float widthVelocityFeedbackStrength = 1.0f;
     
     [Header("Output")]
     [Tooltip("Automatically export river mesh CSV when simulation stops.")]
     public bool AutoExportMeshOnStop = true;
     
-    [Tooltip("Filename for exported river mesh CSV (written to persistentDataPath).")]
+    [Tooltip("Filename for exported river mesh CSV (written to E:\\UCL\\River-Modelling\\River-Unity\\Results by default).")]
     public string MeshExportFileName = "RiverMeshOutput.csv";
 
     private RiverMeshPhysicsSolver riverMeshSolver;
+    
+    // Oxbow lake management
+    private List<OxbowLake> oxbowLakes = new List<OxbowLake>();
+    
+    /// <summary>
+    /// Represents an oxbow lake with its own physics solver and visualization mesh.
+    /// </summary>
+    private class OxbowLake
+    {
+        public RiverMeshPhysicsSolver solver;
+        public int originalStartCrossSection;  // Original position in main river
+        public int originalEndCrossSection;
+        public Vector3[] vertices;
+        public Mesh mesh;
+        public GameObject meshObject;  // Unity GameObject for visualization
+        public float age;  // Time since cutoff (for decay effects)
+        
+        public OxbowLake(RiverMeshPhysicsSolver solver, int start, int end, Vector3[] vertices, Mesh mesh)
+        {
+            this.solver = solver;
+            this.originalStartCrossSection = start;
+            this.originalEndCrossSection = end;
+            this.vertices = vertices;
+            this.mesh = mesh;
+            this.meshObject = null;
+            this.age = 0.0f;
+        }
+    }
 
     // --- Unity Lifecycle Methods ---
 
@@ -189,16 +223,6 @@ public class SimulationController : MonoBehaviour
 
     void Update()
     {
-        // Validate TimeStep
-        if (TimeStep > 0.1f)
-        {
-            Debug.LogError($"[SimulationController] CRITICAL: TimeStep ({TimeStep}) is too large! This will cause numerical instability. Recommended: 0.01 or less. Clamping to 0.01.");
-            TimeStep = 0.01f;
-        }
-        else if (TimeStep > 0.05f)
-        {
-            Debug.LogWarning($"[SimulationController] WARNING: TimeStep ({TimeStep}) is large and may cause instability. Recommended: 0.01 or less.");
-        }
         
         // Check if RunSimulation state changed
         bool wasRunning = lastRunSimulationState;
@@ -254,6 +278,9 @@ public class SimulationController : MonoBehaviour
         {
             RunRiverMeshTimeStep(TimeStep);
         }
+        
+        // Update oxbow lakes physics
+        UpdateOxbowLakes(TimeStep);
 
         // Update the visual mesh with the new data
         if (UpdateRiverGeometry)
@@ -417,7 +444,19 @@ public class SimulationController : MonoBehaviour
         // Run Navier-Stokes step in river-local coordinates
         riverMeshSolver.NavierStokesStep(dt);
         
-        // Compute bed shear stress
+        // Apply width-based velocity constraint (reduces velocity when channel widens)
+        // This creates negative feedback to prevent runaway growth
+        if (geometryLoader != null && UpdateRiverGeometry)
+        {
+            Mesh riverMesh = geometryLoader.GetMesh();
+            if (riverMesh != null && riverMesh.vertices != null)
+            {
+                Vector3[] vertices = riverMesh.vertices;
+                riverMeshSolver.ApplyWidthBasedVelocityConstraint(vertices, (double)widthVelocityFeedbackStrength);
+            }
+        }
+        
+        // Compute bed shear stress (now using constrained velocities)
         double[,] tau = riverMeshSolver.ComputeShearStress();
         
         // Compute sediment flux vector
@@ -425,6 +464,80 @@ public class SimulationController : MonoBehaviour
         
         // Solve Exner equation (updates bed elevation h)
         (_, riverMeshSolver.h) = riverMeshSolver.ExnerEquation(qs_s, qs_w, dt);
+        
+        // Update mesh vertices to widen/narrow cross-sections based on bank erosion
+        // This moves the literal grid outward when banks erode, keeping the same resolution
+        // CRITICAL: This must happen BEFORE visualization update to preserve horizontal movement
+        if (geometryLoader != null && UpdateRiverGeometry)
+        {
+            Mesh riverMesh = geometryLoader.GetMesh();
+            if (riverMesh != null && riverMesh.vertices != null)
+            {
+                Vector3[] vertices = riverMesh.vertices;
+                
+                // Update vertices for bank migration (horizontal movement)
+                riverMeshSolver.UpdateMeshVerticesForBankMigration(vertices, dt);
+                
+                // CRITICAL: Update mesh immediately to preserve vertex positions
+                // The visualization update will only modify Y (elevation), preserving X/Z from migration
+                riverMesh.vertices = vertices;
+                riverMesh.RecalculateNormals();
+                riverMesh.RecalculateBounds();
+                
+                // Mark mesh as modified so Unity updates the renderer
+                riverMesh.UploadMeshData(false); // false = keep mesh data in CPU memory for further updates
+            }
+        }
+        
+        // DISABLED: Bank breaking causes mesh corruption
+        // Bank breaking is disabled - rely on cutoff detection instead which properly handles mesh reconnection
+        // Check for bank collisions and break through banks to allow flow
+        // if (geometryLoader != null && UpdateRiverGeometry)
+        // {
+        //     Mesh riverMesh = geometryLoader.GetMesh();
+        //     if (riverMesh != null && riverMesh.vertices != null)
+        //     {
+        //         Vector3[] vertices = riverMesh.vertices;
+        //         bool banksBroken = riverMeshSolver.BreakBanksOnCollision(vertices);
+        //         if (banksBroken)
+        //         {
+        //             // Banks were broken - mesh structure may have changed, update visualization
+        //             ForceMeshUpdate();
+        //         }
+        //     }
+        // }
+        
+        // Check for cutoffs and handle oxbow lake formation
+        // Only process cutoffs if mesh is valid
+        if (geometryLoader != null)
+        {
+            Mesh riverMesh = geometryLoader.GetMesh();
+            if (riverMesh != null && riverMesh.vertices != null && riverMesh.vertices.Length > 0)
+            {
+                // Validate mesh before processing cutoffs
+                bool meshValid = true;
+                for (int i = 0; i < riverMesh.vertices.Length; i++)
+                {
+                    if (!float.IsFinite(riverMesh.vertices[i].x) || 
+                        !float.IsFinite(riverMesh.vertices[i].y) || 
+                        !float.IsFinite(riverMesh.vertices[i].z))
+                    {
+                        meshValid = false;
+                        Debug.LogError($"[SimulationController] Invalid vertex detected at index {i} before cutoff processing");
+                        break;
+                    }
+                }
+                
+                if (meshValid)
+                {
+                    ProcessCutoffs();
+                }
+                else
+                {
+                    Debug.LogWarning("[SimulationController] Skipping cutoff processing due to invalid mesh vertices");
+                }
+            }
+        }
         
         stepCount++;
         
@@ -444,6 +557,260 @@ public class SimulationController : MonoBehaviour
         }
     }
     
+    /// <summary>
+    /// Processes cutoffs: detects when meander loops close, extracts oxbow lakes, and reconnects main channel.
+    /// </summary>
+    private void ProcessCutoffs()
+    {
+        if (riverMeshSolver == null)
+            return;
+        
+        // Detect cutoffs (pass current mesh vertices for distance-based detection)
+        Mesh riverMesh = geometryLoader.GetMesh();
+        Vector3[] currentVertices = (riverMesh != null && riverMesh.vertices != null) ? riverMesh.vertices : null;
+        List<(int crossSection, int leftEdge, int rightEdge)> cutoffs = riverMeshSolver.DetectCutoff(currentVertices);
+        
+        if (cutoffs.Count == 0)
+            return;
+        
+        Debug.Log($"[SimulationController] Detected {cutoffs.Count} cutoff(s)");
+        
+        // Process each cutoff (process in reverse order to maintain indices)
+        for (int cutoffIdx = cutoffs.Count - 1; cutoffIdx >= 0; cutoffIdx--)
+        {
+            var cutoff = cutoffs[cutoffIdx];
+            int cutoffCrossSection = cutoff.crossSection;
+            
+            // Find disconnected sections
+            List<(int start, int end)> disconnectedRanges = riverMeshSolver.FindDisconnectedSections(
+                Math.Max(0, cutoffCrossSection - 10), 
+                Math.Min(riverMeshSolver.numCrossSections - 1, cutoffCrossSection + 10)
+            );
+            
+            // Process each disconnected range as an oxbow lake
+            foreach (var range in disconnectedRanges)
+            {
+                if (range.end - range.start < 2)
+                    continue; // Skip very small sections
+                
+                // Extract oxbow section
+                // Reuse riverMesh and currentVertices from outer scope
+                if (riverMesh == null || riverMesh.vertices == null)
+                    continue;
+                OxbowSectionData oxbowData = riverMeshSolver.ExtractOxbowSection(
+                    range.start, range.end, currentVertices
+                );
+                
+                // Create oxbow lake solver
+                OxbowLake oxbowLake = CreateOxbowLakeSolver(oxbowData);
+                if (oxbowLake != null)
+                {
+                    oxbowLakes.Add(oxbowLake);
+                    Debug.Log($"[SimulationController] Created oxbow lake from cross-sections {range.start} to {range.end}");
+                }
+            }
+            
+            // Reconnect main channel
+            Mesh mainMesh = geometryLoader.GetMesh();
+            if (mainMesh != null && mainMesh.vertices != null)
+            {
+                Vector3[] reconnectedVertices = riverMeshSolver.ReconnectChannel(
+                    Math.Max(0, cutoffCrossSection - 10),
+                    Math.Min(riverMeshSolver.numCrossSections - 1, cutoffCrossSection + 10),
+                    mainMesh.vertices
+                );
+                
+                // Update main mesh vertices
+                mainMesh.vertices = reconnectedVertices;
+                mainMesh.RecalculateNormals();
+                mainMesh.RecalculateBounds();
+                
+                Debug.Log($"[SimulationController] Reconnected main channel after cutoff at cross-section {cutoffCrossSection}");
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Creates a new RiverMeshPhysicsSolver for an oxbow lake from extracted section data.
+    /// </summary>
+    private OxbowLake CreateOxbowLakeSolver(OxbowSectionData data)
+    {
+        if (data.vertices == null || data.vertices.Length == 0)
+            return null;
+        
+        int oxbowNumCrossSections = data.endCrossSection - data.startCrossSection + 1;
+        
+        // Create new solver with same physics parameters as main solver
+        RiverMeshPhysicsSolver oxbowSolver = new RiverMeshPhysicsSolver(
+            data.vertices, oxbowNumCrossSections, widthResolution: riverMeshSolver.widthResolution,
+            nu: Nu, rho: Rho, g: G,
+            sedimentDensity: SedimentDensity,
+            porosity: Porosity,
+            criticalShear: CriticalShear,
+            transportCoefficient: TransportCoefficient,
+            bankCriticalShear: BankCriticalShear,
+            bankErosionRate: BankErosionRate,
+            unityToMetersScale: 1.0 / riverMeshSolver.GetMetersToUnityScale() // Convert meters-to-unity back to unity-to-meters
+        );
+        
+        // Copy physics state from extracted data
+        for (int i = 0; i < oxbowNumCrossSections; i++)
+        {
+            for (int w = 0; w < riverMeshSolver.widthResolution; w++)
+            {
+                oxbowSolver.h[i, w] = data.h[i, w];
+                oxbowSolver.waterDepth[i, w] = data.waterDepth[i, w];
+                oxbowSolver.cellType[i, w] = data.cellType[i, w];
+                oxbowSolver.u[i, w] = data.u[i, w];
+                oxbowSolver.v[i, w] = data.v[i, w];
+            }
+        }
+        
+        // Initialize bed elevation: h should represent changes from initial
+        // The extracted data.h already contains changes, so we just need to set initialBedElevation
+        // Use reflection or add a method to set initial bed elevation
+        // For now, call InitializeBedElevationFromMesh which will set h to 0 and store initial
+        oxbowSolver.InitializeBedElevationFromMesh(data.vertices);
+        
+        // Then restore the h values (changes) from extracted data
+        for (int i = 0; i < oxbowNumCrossSections; i++)
+        {
+            for (int w = 0; w < riverMeshSolver.widthResolution; w++)
+            {
+                oxbowSolver.h[i, w] = data.h[i, w];
+            }
+        }
+        
+        // Create mesh for visualization
+        Mesh oxbowMesh = new Mesh();
+        oxbowMesh.name = $"OxbowLake_{data.startCrossSection}_{data.endCrossSection}";
+        oxbowMesh.vertices = data.vertices;
+        
+        // Generate triangles (same structure as main river)
+        List<int> triangles = new List<int>();
+        for (int i = 0; i < oxbowNumCrossSections - 1; i++)
+        {
+            for (int w = 0; w < riverMeshSolver.widthResolution - 1; w++)
+            {
+                int current = i * riverMeshSolver.widthResolution + w;
+                int next = (i + 1) * riverMeshSolver.widthResolution + w;
+                int currentRight = i * riverMeshSolver.widthResolution + (w + 1);
+                int nextRight = (i + 1) * riverMeshSolver.widthResolution + (w + 1);
+                
+                // Triangle 1
+                triangles.Add(current);
+                triangles.Add(currentRight);
+                triangles.Add(next);
+                
+                // Triangle 2
+                triangles.Add(next);
+                triangles.Add(currentRight);
+                triangles.Add(nextRight);
+            }
+        }
+        oxbowMesh.triangles = triangles.ToArray();
+        oxbowMesh.RecalculateNormals();
+        oxbowMesh.RecalculateBounds();
+        
+        // Create GameObject for visualization
+        GameObject oxbowObject = new GameObject($"OxbowLake_{data.startCrossSection}_{data.endCrossSection}");
+        oxbowObject.transform.SetParent(RiverGeometry.transform);
+        oxbowObject.transform.localPosition = Vector3.zero;
+        
+        MeshFilter mf = oxbowObject.AddComponent<MeshFilter>();
+        mf.mesh = oxbowMesh;
+        
+        MeshRenderer mr = oxbowObject.AddComponent<MeshRenderer>();
+        // Use same material as main river
+        GameObject mainRiverMesh = RiverGeometry.transform.Find("RiverMesh")?.gameObject;
+        if (mainRiverMesh != null)
+        {
+            MeshRenderer mainMR = mainRiverMesh.GetComponent<MeshRenderer>();
+            if (mainMR != null && mainMR.material != null)
+            {
+                mr.material = mainMR.material;
+            }
+        }
+        
+        return new OxbowLake(oxbowSolver, data.startCrossSection, data.endCrossSection, data.vertices, oxbowMesh)
+        {
+            meshObject = oxbowObject
+        };
+    }
+    
+    /// <summary>
+    /// Updates physics for all oxbow lakes each simulation step.
+    /// </summary>
+    private void UpdateOxbowLakes(float dt)
+    {
+        for (int i = oxbowLakes.Count - 1; i >= 0; i--)
+        {
+            OxbowLake oxbow = oxbowLakes[i];
+            if (oxbow.solver == null)
+            {
+                oxbowLakes.RemoveAt(i);
+                continue;
+            }
+            
+            // Update oxbow age
+            oxbow.age += dt;
+            
+            // Run physics step for oxbow lake
+            oxbow.solver.NavierStokesStep(dt);
+            
+            // Compute bed shear stress
+            double[,] tau = oxbow.solver.ComputeShearStress();
+            
+            // Compute sediment flux
+            (double[,] qs_s, double[,] qs_w) = oxbow.solver.ComputeSedimentFluxVector(tau);
+            
+            // Solve Exner equation
+            (_, oxbow.solver.h) = oxbow.solver.ExnerEquation(qs_s, qs_w, dt);
+            
+            // Update oxbow mesh visualization
+            UpdateOxbowLakeMesh(oxbow);
+        }
+    }
+    
+    /// <summary>
+    /// Updates the visualization mesh for an oxbow lake.
+    /// </summary>
+    private void UpdateOxbowLakeMesh(OxbowLake oxbow)
+    {
+        if (oxbow.mesh == null || oxbow.solver == null || oxbow.meshObject == null)
+            return;
+        
+        Vector3[] vertices = oxbow.mesh.vertices;
+        int numCrossSections = oxbow.solver.numCrossSections;
+        int widthResolution = oxbow.solver.widthResolution;
+        
+        // Update vertices with current bed elevation
+        for (int i = 0; i < numCrossSections; i++)
+        {
+            for (int w = 0; w < widthResolution; w++)
+            {
+                int vertexIdx = i * widthResolution + w;
+                if (vertexIdx >= vertices.Length)
+                    continue;
+                
+                // Get initial elevation and apply changes
+                double initialElevationMeters = oxbow.solver.GetInitialBedElevation(i, w);
+                double bedElevationChangeMeters = oxbow.solver.h[i, w];
+                double totalElevationMeters = initialElevationMeters + bedElevationChangeMeters;
+                
+                // Convert to Unity units
+                double metersToUnityScale = oxbow.solver.GetMetersToUnityScale();
+                float finalElevation = (float)(totalElevationMeters * metersToUnityScale * RiverGeometryElevationScale);
+                
+                // Preserve X and Z, update Y
+                vertices[vertexIdx] = new Vector3(vertices[vertexIdx].x, finalElevation, vertices[vertexIdx].z);
+            }
+        }
+        
+        oxbow.mesh.vertices = vertices;
+        oxbow.mesh.RecalculateNormals();
+        oxbow.mesh.RecalculateBounds();
+    }
 
     // --- Visualization ---
 
@@ -690,7 +1057,11 @@ public class SimulationController : MonoBehaviour
                 // Convert meters to Unity units
                 double metersToUnityScale = riverMeshSolver.GetMetersToUnityScale();
                 float finalElevation = (float)(totalElevationMeters * metersToUnityScale * RiverGeometryElevationScale);
-                riverVertices[vertexIdx] = new Vector3(newPosition.x, finalElevation, newPosition.z);
+                
+                // CRITICAL: Preserve horizontal position (X, Z) from UpdateMeshVerticesForBankMigration
+                // Only update elevation (Y) to avoid overwriting horizontal migration
+                Vector3 currentVertex = riverVertices[vertexIdx];
+                riverVertices[vertexIdx] = new Vector3(currentVertex.x, finalElevation, currentVertex.z);
                 
                 // Get erosion rate (negative = erosion, positive = deposition)
                 double erosionRate = riverMeshSolver.GetErosionRate(i, w);
@@ -714,8 +1085,19 @@ public class SimulationController : MonoBehaviour
                 // Check for bank migration
                 float bankMigration = riverMeshSolver.IsBankMigrating(i, w) ? 1.0f : 0.0f;
                 
-                // Store in vertex color: R = normalized erosion, G = deposition flag, B = bank migration
-                colors[vertexIdx] = new Color(normalizedErosion, isDeposition, bankMigration, 1);
+                // Handle BANK cells: ensure they're visible even with zero erosion
+                if (riverMeshSolver.cellType[i, w] == RiverCellType.BANK)
+                {
+                    // For BANK cells, use brown color (R=0.5, G=0.3, B=0.1) so they're always visible
+                    // If bank is migrating, add some red tint
+                    float bankRed = 0.5f + bankMigration * 0.3f; // Brown to reddish-brown when migrating
+                    colors[vertexIdx] = new Color(bankRed, 0.3f, 0.1f, 1f);
+                }
+                else
+                {
+                    // FLUID cells: Store in vertex color: R = normalized erosion, G = deposition flag, B = bank migration
+                    colors[vertexIdx] = new Color(normalizedErosion, isDeposition, bankMigration, 1);
+                }
             }
         }
         
@@ -812,9 +1194,19 @@ public class SimulationController : MonoBehaviour
                 riverVertices[vertexIdx] = new Vector3(vertex.x, finalElevation, vertex.z);
                 
                 // Get velocity magnitude (u along river, v across river)
-                double vel = riverMeshSolver.GetVelocityMagnitude(i, w);
-                float normalizedVelocity = Mathf.Clamp01((float)vel / maxVelocity);
-                colors[vertexIdx] = new Color(normalizedVelocity, 0, 0, 1);
+                // Handle BANK cells with default color (brown/gray) so they're visible even without flow
+                if (riverMeshSolver.cellType[i, w] == RiverCellType.BANK)
+                {
+                    // Set brown color for BANK cells (R=0.5, G=0.3, B=0.1) so they're visible
+                    colors[vertexIdx] = new Color(0.5f, 0.3f, 0.1f, 1f);
+                }
+                else
+                {
+                    // FLUID cells: use velocity-based color
+                    double vel = riverMeshSolver.GetVelocityMagnitude(i, w);
+                    float normalizedVelocity = Mathf.Clamp01((float)vel / maxVelocity);
+                    colors[vertexIdx] = new Color(normalizedVelocity, 0, 0, 1);
+                }
             }
         }
         
@@ -864,7 +1256,7 @@ public class SimulationController : MonoBehaviour
     /// Exports the current river mesh geometry to CSV matching the Jurua schema.
     /// Columns: ,order,group,centerline_x,centerline_y,centerline_x_corrected,centerline_y_corrected,right_bank_x,right_bank_y,left_bank_x,left_bank_y,width (m),curvature
     /// </summary>
-    /// <param name="overridePath">Optional full path override. Defaults to Application.persistentDataPath/MeshExportFileName.</param>
+    /// <param name="overridePath">Optional full path override. Defaults to E:\UCL\River-Modelling\River-Unity\Results\MeshExportFileName.</param>
     public void ExportCurrentRiverMesh(string overridePath = null)
     {
         if (geometryLoader == null)
@@ -895,8 +1287,16 @@ public class SimulationController : MonoBehaviour
         }
         
         string path = string.IsNullOrEmpty(overridePath)
-            ? Path.Combine(Application.persistentDataPath, MeshExportFileName)
+            ? Path.Combine(@"E:\UCL\River-Modelling\River-Unity\Results", MeshExportFileName)
             : overridePath;
+        
+        // Ensure directory exists
+        string directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory);
+            Debug.Log($"[SimulationController] Created results directory: {directory}");
+        }
         
         var sb = new StringBuilder();
         sb.AppendLine(",order,group,centerline_x,centerline_y,centerline_x_corrected,centerline_y_corrected,right_bank_x,right_bank_y,left_bank_x,left_bank_y,width (m),curvature");

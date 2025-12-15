@@ -27,7 +27,7 @@ public class LongTermSimulationController : MonoBehaviour
     [Tooltip("Base filename for exported geometry (timestamp will be appended)")]
     public string exportFileName = "RiverSimulation_2017";
     
-    [Tooltip("Base path for export (empty = use Application.persistentDataPath)")]
+    [Tooltip("Base path for export (empty = use E:\\UCL\\River-Modelling\\River-Unity\\Results)")]
     public string exportBasePath = "";
     
     [Header("Performance")]
@@ -176,6 +176,23 @@ public class LongTermSimulationController : MonoBehaviour
             return;
         }
         
+        // Recalculate physicsTimeStep from current timeStepDays value
+        // This allows the time step to be changed in the editor during simulation
+        float newPhysicsTimeStep = timeStepDays * 86400f; // 86400 seconds per day
+        if (Math.Abs(newPhysicsTimeStep - physicsTimeStep) > 0.01f)
+        {
+            // Time step changed - recalculate total steps and update
+            physicsTimeStep = newPhysicsTimeStep;
+            totalSteps = (simulationYears * 365) / timeStepDays;
+            Debug.LogWarning($"[LongTermSimulationController] Time step changed during simulation! Updated to: {timeStepDays} day(s) ({physicsTimeStep:F0} seconds). Total steps recalculated: {totalSteps}. Consider restarting simulation for accurate progress tracking.");
+        }
+        
+        // Debug: Log time step being used (only once per 1000 steps to avoid spam)
+        if (currentStep % 1000 == 0 && currentStep > 0)
+        {
+            Debug.Log($"[LongTermSimulationController] Using time step: {timeStepDays} day(s) = {physicsTimeStep:F0} seconds (dt={physicsTimeStep})");
+        }
+        
         RiverMeshPhysicsSolver solver = simulationController.GetSolver();
         if (solver == null)
         {
@@ -253,7 +270,30 @@ public class LongTermSimulationController : MonoBehaviour
         // Run Navier-Stokes step in river-local coordinates
         solver.NavierStokesStep(physicsTimeStep);
         
-        // Compute bed shear stress
+        // Apply width-based velocity constraint (reduces velocity when channel widens)
+        // This creates negative feedback to prevent runaway growth
+        if (simulationController != null && simulationController.UpdateRiverGeometry)
+        {
+            GameObject riverGeometry = simulationController.RiverGeometry;
+            if (riverGeometry != null)
+            {
+                CSVGeometryLoader geometryLoader = riverGeometry.GetComponent<CSVGeometryLoader>();
+                if (geometryLoader != null)
+                {
+                    Mesh riverMesh = geometryLoader.GetMesh();
+                    if (riverMesh != null && riverMesh.vertices != null)
+                    {
+                        Vector3[] vertices = riverMesh.vertices;
+                        // Get feedback strength from simulation controller if available
+                        double feedbackStrength = simulationController != null ? 
+                            (double)simulationController.widthVelocityFeedbackStrength : 1.0;
+                        solver.ApplyWidthBasedVelocityConstraint(vertices, feedbackStrength);
+                    }
+                }
+            }
+        }
+        
+        // Compute bed shear stress (now using constrained velocities)
         double[,] tau = solver.ComputeShearStress();
         
         // Compute sediment flux vector
@@ -261,6 +301,41 @@ public class LongTermSimulationController : MonoBehaviour
         
         // Solve Exner equation (updates bed elevation h)
         (_, solver.h) = solver.ExnerEquation(qs_s, qs_w, physicsTimeStep);
+        
+        // CRITICAL: Update mesh vertices for bank migration (horizontal movement)
+        // This must be called to actually move the banks and create meandering
+        if (simulationController != null && simulationController.UpdateRiverGeometry)
+        {
+            GameObject riverGeometry = simulationController.RiverGeometry;
+            if (riverGeometry != null)
+            {
+                CSVGeometryLoader geometryLoader = riverGeometry.GetComponent<CSVGeometryLoader>();
+                if (geometryLoader != null)
+                {
+                    Mesh riverMesh = geometryLoader.GetMesh();
+                    if (riverMesh != null && riverMesh.vertices != null)
+                    {
+                        Vector3[] vertices = riverMesh.vertices;
+                        solver.UpdateMeshVerticesForBankMigration(vertices, physicsTimeStep);
+                        riverMesh.vertices = vertices;
+                        riverMesh.RecalculateNormals();
+                        riverMesh.RecalculateBounds();
+                        
+                        // DISABLED: Bank breaking causes mesh corruption
+                        // Bank breaking is disabled - rely on cutoff detection instead
+                        // Check for bank collisions and break through banks to allow flow
+                        // bool banksBroken = solver.BreakBanksOnCollision(vertices);
+                        // if (banksBroken)
+                        // {
+                        //     // Update mesh again after bank breaking
+                        //     riverMesh.vertices = vertices;
+                        //     riverMesh.RecalculateNormals();
+                        //     riverMesh.RecalculateBounds();
+                        // }
+                    }
+                }
+            }
+        }
     }
     
     /// <summary>
@@ -327,8 +402,15 @@ public class LongTermSimulationController : MonoBehaviour
         
         // Determine export path
         string basePath = string.IsNullOrEmpty(exportBasePath) 
-            ? Application.persistentDataPath 
+            ? @"E:\UCL\River-Modelling\River-Unity\Results"
             : exportBasePath;
+        
+        // Ensure base directory exists
+        if (!Directory.Exists(basePath))
+        {
+            Directory.CreateDirectory(basePath);
+            Debug.Log($"[LongTermSimulationController] Created results directory: {basePath}");
+        }
         
         string fullPath = Path.Combine(basePath, fileName);
         

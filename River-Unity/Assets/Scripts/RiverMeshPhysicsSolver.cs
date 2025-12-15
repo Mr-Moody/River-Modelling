@@ -1397,9 +1397,8 @@ public class RiverMeshPhysicsSolver
             double leftTotalErosion = leftBankErosionRate * (1.0 + leftCumulativeFactor * 0.1); // Much smaller multiplier
             double rightTotalErosion = rightBankErosionRate * (1.0 + rightCumulativeFactor * 0.1);
             
-            // FAVOR MEANDERING OVER WIDENING:
-            // If both banks are eroding outward (widening), reduce the movement significantly
-            // If one bank erodes more than the other (meandering), allow normal movement
+            // If both banks are eroding outward (widening), extremely heavily penalize it
+            // If one bank erodes more than the other (meandering), very strongly boost it
             bool bothBanksEroding = leftTotalErosion > 0 && rightTotalErosion > 0;
             bool bothBanksDepositing = leftTotalErosion < 0 && rightTotalErosion < 0;
             
@@ -1408,26 +1407,41 @@ public class RiverMeshPhysicsSolver
             double totalErosionMagnitude = Math.Abs(leftTotalErosion) + Math.Abs(rightTotalErosion);
             double asymmetryRatio = totalErosionMagnitude > 0 ? erosionAsymmetry / totalErosionMagnitude : 0.0;
             
-            // If both banks are eroding outward (symmetric widening), heavily penalize it
-            if (bothBanksEroding && asymmetryRatio < 0.3) // Less than 30% asymmetry = symmetric widening
+            // If both banks are eroding outward (symmetric widening), extremely heavily penalize it
+            // Very low threshold (0.1) to catch even slightly symmetric widening
+            if (bothBanksEroding && asymmetryRatio < 0.1) // Less than 10% asymmetry = symmetric widening
             {
-                // Reduce outward movement by 90% to favor meandering
-                leftTotalErosion *= 0.1;
-                rightTotalErosion *= 0.1;
+                // Reduce outward movement by 99.5% to extremely strongly favor meandering (was 99%)
+                leftTotalErosion *= 0.005;
+                rightTotalErosion *= 0.005;
             }
-            // If one bank erodes much more than the other (asymmetric = meandering), allow it
-            else if (asymmetryRatio > 0.5) // More than 50% asymmetry = strong meandering
+            // If one bank erodes more than the other (asymmetric = meandering), very strongly boost it
+            // Lower threshold (0.12) to boost more meandering cases
+            else if (asymmetryRatio > 0.12) // More than 12% asymmetry = meandering (lowered from 15%)
             {
-                // Boost meandering movement slightly (10% increase)
+                // Boost meandering movement very significantly (100% increase, increased from 85%)
                 if (leftTotalErosion > rightTotalErosion)
                 {
-                    leftTotalErosion *= 1.1;
-                    rightTotalErosion *= 0.9; // Opposite bank moves less
+                    leftTotalErosion *= 2.0;
+                    rightTotalErosion *= 0.2; // Opposite bank moves even less (was 0.25)
                 }
                 else
                 {
-                    rightTotalErosion *= 1.1;
-                    leftTotalErosion *= 0.9;
+                    rightTotalErosion *= 2.0;
+                    leftTotalErosion *= 0.2;
+                }
+            }
+            // Even for moderate asymmetry, give a boost to meandering
+            else if (asymmetryRatio > 0.05 && !bothBanksEroding)
+            {
+                // Moderate boost for any asymmetric movement (increased from 1.4 to 1.5)
+                if (Math.Abs(leftTotalErosion) > Math.Abs(rightTotalErosion))
+                {
+                    leftTotalErosion *= 1.5;
+                }
+                else
+                {
+                    rightTotalErosion *= 1.5;
                 }
             }
             
@@ -1437,9 +1451,9 @@ public class RiverMeshPhysicsSolver
             float rightBankMovement = (float)(rightTotalErosion * metersToUnityScale);
             
             // Apply movement limits to prevent excessive expansion/contraction
-            // Reduced to 1% per step for outward movement, 2% for inward (meandering)
-            float maxOutwardMovementPerStep = currentWidth * 0.01f; // Max 1% width increase per step (widening)
-            float maxInwardMovementPerStep = currentWidth * 0.02f; // Max 2% width decrease per step (narrowing/meandering)
+            // Extremely heavily favor inward movement (meandering) over outward movement (widening)
+            float maxOutwardMovementPerStep = currentWidth * 0.0005f; // Max 0.05% width increase per step (widening) - extremely restrictive (reduced from 0.1%)
+            float maxInwardMovementPerStep = currentWidth * 0.08f; // Max 8% width decrease per step (narrowing/meandering) - very permissive
             
             // Clamp outward movement more strictly than inward
             if (leftBankMovement > 0)
@@ -2079,10 +2093,9 @@ public class RiverMeshPhysicsSolver
                 // Check if there's significant erosion on the left bank edge
                 double leftBankErosion = cumulativeBankErosion[i, leftBankEdge];
                 
-                // For outward migration, use a MUCH higher threshold to prevent excessive widening
-                // Only widen when erosion is extremely high (e.g., 50x the migration threshold)
-                // This heavily favors meandering (inward migration) over widening
-                double outwardMigrationThreshold = bankMigrationThreshold * 50.0;
+                // Only widen when erosion is extremely high (e.g., 500x the migration threshold)
+                // This  heavily favors meandering (inward migration) over widening
+                double outwardMigrationThreshold = bankMigrationThreshold * 500.0;
                 
                 if (leftBankErosion >= outwardMigrationThreshold)
                 {
@@ -2112,10 +2125,9 @@ public class RiverMeshPhysicsSolver
                 // Check if there's significant erosion on the right bank edge
                 double rightBankErosion = cumulativeBankErosion[i, rightBankEdge];
                 
-                // For outward migration, use a MUCH higher threshold to prevent excessive widening
-                // Only widen when erosion is extremely high (e.g., 50x the migration threshold)
-                // This heavily favors meandering (inward migration) over widening
-                double outwardMigrationThreshold = bankMigrationThreshold * 50.0;
+                // Only widen when erosion is extremely high (e.g., 500x the migration threshold)
+                // This extremely heavily favors meandering (inward migration) over widening
+                double outwardMigrationThreshold = bankMigrationThreshold * 500.0;
                 
                 if (rightBankErosion >= outwardMigrationThreshold)
                 {
